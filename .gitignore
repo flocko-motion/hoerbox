@@ -1,0 +1,16 @@
+# Build output
+/hoerbox
+/bin/
+/dist/
+
+# Local runtime data: resolve cache, temp scratch space
+/data/
+/out/
+/in/
+
+# Go
+*.test
+*.out
+
+# OS / editor cruft
+.DS_Store
