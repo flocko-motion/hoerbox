@@ -54,8 +54,11 @@ make help       # list all targets
 ```
 
 Requires Go 1.26+. Originally built on Spotify (go-librespot); switched
-to YouTube Music after Spotify's DRM changes made that a dead end — see
-git history if curious.
+to YouTube Music after Spotify's DRM changes made that a dead end.
+
+## License
+
+[MIT](LICENSE)
 
 ## Disclaimer
 
