@@ -63,7 +63,7 @@ func (g *guiApp) toggleStream() {
 // alike — the OS closes it for us and the child signals itself to stop,
 // so it never outlives this GUI as an orphan.
 func (g *guiApp) startStream() {
-	cmd := exec.Command(g.self, "stream")
+	cmd := exec.Command(g.self, append([]string{"stream"}, g.browserArgs()...)...)
 	sink := &lineSink{onLine: g.handleLine}
 	cmd.Stdout, cmd.Stderr = sink, sink
 
@@ -195,7 +195,7 @@ func (g *guiApp) showAddDialog() {
 			if !ok || strings.TrimSpace(entry.Text) == "" {
 				return
 			}
-			go g.runOneShot("add", entry.Text)
+			go g.runOneShot(append([]string{"add", entry.Text}, g.browserArgs()...)...)
 		}, g.win)
 	d.Resize(fyne.NewSize(560, 160))
 	d.Show()

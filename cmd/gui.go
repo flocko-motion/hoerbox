@@ -51,6 +51,7 @@ func runGUI(_ *cobra.Command, _ []string) error {
 type guiApp struct {
 	self string // path to hoerbox's own binary, for self-re-exec
 
+	app           fyne.App // for Preferences() — see cmd/gui_browser.go
 	win           fyne.Window
 	table         *widget.Table
 	statusLabel   *widget.Label
@@ -75,6 +76,7 @@ const appID = "net.omnitopos.hoerbox"
 
 func (g *guiApp) build() {
 	a := app.NewWithID(appID)
+	g.app = a
 	a.Settings().SetTheme(mutedTheme{Theme: theme.DefaultTheme()})
 	// macOS resets the CWD during window/GL setup, after app.NewWithID.
 	// SetOnStarted is Fyne's "actually running now" hook — re-chdir
@@ -101,6 +103,7 @@ func (g *guiApp) build() {
 		widget.NewButton("Remove Done", g.removeDone),
 		widget.NewButton("Refresh", func() { go g.refreshList() }),
 		widget.NewButton("Open Folder", g.openFolder),
+		widget.NewButton("Browser", g.showBrowserDialog),
 	)
 
 	split := container.NewVSplit(g.table, g.terminalPanel)

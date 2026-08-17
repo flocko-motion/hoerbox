@@ -10,6 +10,13 @@ import (
 	"github.com/flocko-motion/hoerbox/internal/config"
 )
 
+// KnownCookieBrowsers is yt-dlp's own supported set for
+// --cookies-from-browser (see `yt-dlp --help`) — kept in sync by hand,
+// since yt-dlp has no machine-readable way to ask for it.
+var KnownCookieBrowsers = []string{
+	"brave", "chrome", "chromium", "edge", "firefox", "opera", "safari", "vivaldi", "whale",
+}
+
 // cookieArgs returns the yt-dlp flags needed to authenticate as the
 // account configured in cfg.YouTube, or nil if none is configured (fine
 // for public/unlisted content, but most real tracks in an account's own

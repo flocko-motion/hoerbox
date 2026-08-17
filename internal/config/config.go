@@ -51,6 +51,10 @@ type YouTube struct {
 	CookiesFromBrowser string
 }
 
+// DefaultCookiesFromBrowser is New()'s own default, and the GUI's
+// browser-picker default before anyone's ever picked something else.
+const DefaultCookiesFromBrowser = "vivaldi"
+
 // New returns hoerbox's configuration.
 func New() *Config {
 	return &Config{
@@ -62,7 +66,7 @@ func New() *Config {
 			Channels:     2,
 		},
 		YouTube: YouTube{
-			CookiesFromBrowser: "vivaldi",
+			CookiesFromBrowser: DefaultCookiesFromBrowser,
 		},
 	}
 }

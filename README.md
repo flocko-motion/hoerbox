@@ -17,8 +17,14 @@ make install
 Then double-click `hoerbox.app` in `~/Applications`. If something's
 missing or wrong, hoerbox says so in a dialog rather than doing nothing.
 
+**First thing, before adding anything**: click **Browser** and pick the
+browser you're logged into YouTube Music with. Without matching cookies,
+most real tracks fail to download — this isn't optional setup.
+
 ## Using it
 
+- **Browser** picks which local browser hoerbox reads YouTube cookies
+  from (see above — get this right first).
 - **Add** a YouTube Music playlist/album URL — hoerbox starts downloading
   it in the background automatically. Downloads run only while the app is
   open, and pace themselves deliberately (not a bug — see below).
@@ -28,9 +34,6 @@ missing or wrong, hoerbox says so in a dialog rather than doing nothing.
 
 Your library lives at `~/Music/hoerbox` (`in/` for what to fetch, `out/`
 for the results) regardless of where the app icon itself sits.
-
-Account-gated tracks need cookies from a logged-in browser — Vivaldi by
-default; see `internal/config.New()` to change it.
 
 Downloads are paced (never starting a new one within half the previous
 track's own runtime) to avoid looking like a scraper — a big playlist
