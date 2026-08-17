@@ -33,11 +33,8 @@ var rootCmd = &cobra.Command{
 	Use:   "hoerbox",
 	Short: "hoerbox is a whitelisted YouTube Music fetcher for a kid",
 	Long: `hoerbox downloads a curated, whitelisted set of YouTube Music
-tracks/playlists into a local library via yt-dlp + ffmpeg. It's a
-fetcher, not a player: the library it builds is laid out for
-Hörbert-style kids' audio players to play from. Actual playback (a
-Raspberry Pi, physical triggers) is a separate, later project, not part
-of this repo.
+tracks/playlists into a local library via yt-dlp + ffmpeg, laid out for
+Hörbert-style kids' audio players to play from.
 
 Subcommands are organized as debugging/development steps (resolve,
 stream, ...); bare "hoerbox" opens the desktop GUI that wraps them.`,

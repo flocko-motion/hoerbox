@@ -2,9 +2,7 @@
 
 A whitelisted YouTube Music fetcher for a kid: it downloads a curated set
 of playlists/tracks into a local library, laid out for Hörbert-style
-kids' audio players to play from. It's a fetcher, not a player — a
-Raspberry Pi and physical triggers (buttons/RFID) would be a separate,
-later project, not something this repo does.
+kids' audio players to play from.
 
 ## Install (macOS)
 
@@ -44,12 +42,6 @@ taking a while to fill in is expected, not stuck.
 The same binary is also a full CLI — `bin/hoerbox --help` for every
 subcommand (`add`, `stream`, `list`, `stats`, `clean`, `repair`, ...).
 
-## Status
-
-The library/download pipeline and desktop GUI work; that's all this repo
-is right now. Actual playback — a Raspberry Pi, physical triggers — is a
-future project, not started here.
-
 ## Development
 
 ```sh
@@ -57,8 +49,7 @@ make check      # go vet + gofmt check + brokkr lint
 make help       # list all targets
 ```
 
-Requires Go 1.26+. Originally built on Spotify (go-librespot); switched
-to YouTube Music after Spotify's DRM changes made that a dead end.
+Requires Go 1.26+.
 
 ## License
 
