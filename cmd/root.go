@@ -31,15 +31,16 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:   "hoerbox",
-	Short: "hoerbox is a whitelisted YouTube Music speaker client for a Raspberry Pi",
-	Long: `hoerbox plays a curated set of YouTube Music tracks/playlists in response to
-physical triggers (buttons, RFID tags) and hands off raw PCM audio to a
-separate sound-output project. Playback goes through yt-dlp + ffmpeg, not a
-Spotify Connect-style protocol client (see README for why).
+	Short: "hoerbox is a whitelisted YouTube Music fetcher for a kid",
+	Long: `hoerbox downloads a curated, whitelisted set of YouTube Music
+tracks/playlists into a local library via yt-dlp + ffmpeg. It's a
+fetcher, not a player: the library it builds is laid out for
+Hörbert-style kids' audio players to play from. Actual playback (a
+Raspberry Pi, physical triggers) is a separate, later project, not part
+of this repo.
 
-Subcommands are organized as debugging/development steps first (resolve,
-stream, ...) and will grow into a "serve" command that runs hoerbox as the
-actual service on the Pi.`,
+Subcommands are organized as debugging/development steps (resolve,
+stream, ...); bare "hoerbox" opens the desktop GUI that wraps them.`,
 	SilenceUsage: true,
 	PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
 		if err := checkDependencies(); err != nil {
