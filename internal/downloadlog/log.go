@@ -19,6 +19,10 @@ type Status string
 const (
 	StatusSuccess Status = "success"
 	StatusFailed  Status = "failed"
+	// StatusUnavailable is a track YouTube no longer serves (removed,
+	// private, region-blocked) while hoerbox's own setup demonstrably
+	// works — not retried, unlike StatusFailed.
+	StatusUnavailable Status = "unavailable"
 )
 
 // Entry is one recorded download attempt, keyed by URL in a Log.

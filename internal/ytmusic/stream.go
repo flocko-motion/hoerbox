@@ -1,7 +1,7 @@
 // package: ytmusic / integration
 // type:    logic
 // job:     streams one track's audio to raw PCM via yt-dlp piped into ffmpeg
-// limits:  no retry on subprocess failure; caller decides what to do with a failed track
+// limits:  no retry on subprocess failure; a failure's TrackError.Kind tells the caller whose fault it was
 package ytmusic
 
 import (
@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -20,9 +21,8 @@ import (
 )
 
 // StreamTrack fetches url via yt-dlp, decodes to raw PCM via ffmpeg (piped
-// directly between the two, never buffered by hoerbox itself), and writes
-// the result to outputPath — a plain file, or a FIFO with a reader
-// attached already (see internal/pcmpipe).
+// directly between the two), and writes it to outputPath — a plain file,
+// or a FIFO with a reader already attached (see internal/pcmpipe).
 func StreamTrack(ctx context.Context, log *logrus.Entry, cfg *config.Config, url string, outputPath string) error {
 	ytArgs := append([]string{"-f", "bestaudio", "-o", "-", "--no-warnings"}, cookieArgs(log, cfg)...)
 	ytArgs = append(ytArgs, url)
@@ -68,19 +68,19 @@ func StreamTrack(ctx context.Context, log *logrus.Entry, cfg *config.Config, url
 	ffErr := ffCmd.Wait()
 
 	if ytErr != nil {
-		return fmt.Errorf("yt-dlp: %w: %s", ytErr, ytStderr.tail())
+		last, all := ytStderr.tail()
+		return &TrackError{Kind: classify(all), Err: fmt.Errorf("yt-dlp: %w: %s", ytErr, last)}
 	}
 	if ffErr != nil {
-		return fmt.Errorf("ffmpeg: %w: %s", ffErr, ffStderr.tail())
+		last, _ := ffStderr.tail()
+		return fmt.Errorf("ffmpeg: %w: %s", ffErr, last)
 	}
 	return nil
 }
 
-// tailLogger writes each line it receives to log at info level — on by
-// default, this is hoerbox's "what's happening" narration for a
-// subprocess it doesn't control the output format of — while also
-// keeping the lines around so a failure can report real subprocess
-// output instead of just an exit code.
+// tailLogger writes each line it receives to log at info level — hoerbox's
+// "what's happening" narration for a subprocess — and keeps them around so
+// a failure can report real output instead of just an exit code.
 type tailLogger struct {
 	log  *logrus.Entry
 	buf  bytes.Buffer
@@ -109,11 +109,18 @@ func newTailLogger(log *logrus.Entry) *tailLogger {
 
 func (t *tailLogger) Write(p []byte) (int, error) { return t.w.Write(p) }
 
-// tail closes the writer (so the reader goroutine sees EOF), waits for it
-// to finish draining every already-written line, and only then reads buf —
-// otherwise this would race the goroutine still writing to it.
-func (t *tailLogger) tail() string {
+// tail closes the writer, waits for the reader to drain, and returns the
+// last non-empty line — the operative error, not dozens of lines of
+// chatter (already logged as it happened) that would blow up any display —
+// plus the full output, for classifying the failure.
+func (t *tailLogger) tail() (last, all string) {
 	_ = t.w.Close()
 	<-t.done
-	return strings.TrimSpace(t.buf.String())
+	all = strings.TrimSpace(t.buf.String())
+	for _, line := range slices.Backward(strings.Split(all, "\n")) {
+		if line = strings.TrimSpace(line); line != "" {
+			return line, all
+		}
+	}
+	return "", all
 }

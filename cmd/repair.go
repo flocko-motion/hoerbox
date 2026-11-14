@@ -36,10 +36,11 @@ without touching anything.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx := cmd.Context()
-		tracks, err := resolveInputDir(ctx, repairInput, false)
+		queued, _, err := resolveInputDir(ctx, repairInput, false)
 		if err != nil {
 			return err
 		}
+		tracks := plainTracks(queued)
 
 		mlog := downloadlog.Open(repairOutput)
 		trackNos := albumTrackNumbers(tracks)
@@ -114,7 +115,7 @@ func removeIfEmpty(dir string) {
 }
 
 func init() {
-	repairCmd.Flags().StringVar(&repairInput, "input", "./in/", "directory of *.url files to repair")
+	repairCmd.Flags().StringVar(&repairInput, "input", "./in/", "directory of album folders to repair")
 	repairCmd.Flags().StringVar(&repairOutput, "output", "./out/", "directory containing the files and download log to repair")
 	repairCmd.Flags().BoolVar(&repairDryRun, "dry-run", false, "print what would move without touching anything")
 	rootCmd.AddCommand(repairCmd)

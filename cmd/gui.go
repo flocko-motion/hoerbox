@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"runtime"
 	"sync"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -18,6 +19,8 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/spf13/cobra"
+
+	"github.com/flocko-motion/hoerbox/internal/runstate"
 )
 
 var guiCmd = &cobra.Command{
@@ -54,17 +57,39 @@ type guiApp struct {
 	app           fyne.App // for Preferences() — see cmd/gui_browser.go
 	win           fyne.Window
 	table         *widget.Table
-	statusLabel   *widget.Label
 	startStopBtn  *widget.Button
 	terminal      *widget.Entry
 	terminalPanel *container.Scroll
 
 	tracks []TrackStatus // last "list --json" result, playlist-grouped, newest-added first
 
+	// The table's visible rows: one per album, plus the tracks of the one
+	// unfolded album. See cmd/gui_table.go.
+	rows           []tableRow
+	expandedAlbum  string
+	lastClickAlbum string
+	lastClickAt    time.Time
+
 	// sortCol is -1 (server order) until a column header is clicked; asc
 	// toggles on a repeat click of the same column. See sortTracks.
 	sortCol int
 	sortAsc bool
+
+	// The status panel — see cmd/gui_status.go.
+	nowTitle, nowDetail *widget.Label
+	errLabel            *widget.Label
+	errBanner           *fyne.Container
+	errDismissedAt      time.Time
+	localErr            *runstate.Error // our own "stream" child died before recording why
+	lastCounts          runstate.Counts
+	lastRunning         bool
+
+	// Album controls: act on the album of the last-selected track.
+	albumLabel    *widget.Label
+	pauseBtn      *widget.Button
+	cancelBtn     *widget.Button
+	selectedAlbum string
+	lastChildLine string // the running child's last non-token output line
 
 	mu      sync.Mutex
 	running *exec.Cmd // the in-flight "stream" subprocess, nil if none
@@ -84,11 +109,15 @@ func (g *guiApp) build() {
 	a.Lifecycle().SetOnStarted(func() {
 		chdirForAppBundle()
 		go g.refreshList()
-		go g.startStream()
+		go g.pollStatus()
+		// Only one "stream" at a time: if one's already going (another
+		// window, a terminal), follow it rather than start a second.
+		if !runstate.IsRunning(cfg.DataDir) {
+			go g.startStream()
+		}
 	})
 	g.win = a.NewWindow("hoerbox")
 
-	g.statusLabel = widget.NewLabel("idle")
 	g.startStopBtn = widget.NewButton("Start", g.toggleStream)
 	g.buildTable()
 
@@ -109,7 +138,8 @@ func (g *guiApp) build() {
 	split := container.NewVSplit(g.table, g.terminalPanel)
 	split.Offset = 0.6
 
-	g.win.SetContent(container.NewBorder(toolbar, g.statusLabel, nil, nil, split))
+	top := container.NewVBox(toolbar, g.buildStatusPanel())
+	g.win.SetContent(container.NewBorder(top, nil, nil, nil, split))
 	g.win.Resize(fyne.NewSize(900, 600))
 }
 

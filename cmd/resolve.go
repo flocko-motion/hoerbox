@@ -1,6 +1,6 @@
 // package: cmd / cli
 // type:    entrypoint
-// job:     `hoerbox resolve` — re-resolves every ./in/*.url playlist, refreshing their cache
+// job:     `hoerbox resolve` — re-resolves every album in ./in/, refreshing their cache
 // limits:  thin wiring; resolution logic lives in internal/ytmusic
 package cmd
 
@@ -18,9 +18,9 @@ var (
 
 var resolveCmd = &cobra.Command{
 	Use:   "resolve",
-	Short: "Re-resolve every ./in/*.url playlist, refreshing their cached resolution",
+	Short: "Re-resolve every album in ./in/, refreshing their cached resolution",
 	Long: `Force-refetches every playlist/album/track listed in --input (default
-./in/) from YouTube and overwrites each one's cached "*.url.resolved.json"
+./in/) from YouTube and overwrites each one's cached tracks.json
 (see "stream" for what that cache is and why re-running things doesn't
 normally hit YouTube again).
 
@@ -30,7 +30,7 @@ otherwise, since every other command trusts the cache once it exists.
 
 Prints the combined, refreshed track list as JSON: url/trackname/artist/
 album/length tuples — hoerbox's whitelist format. Playlists/albums may be
-referenced in the .url files for convenience, but hoerbox always plays
+referenced in the album.url files for convenience, but hoerbox always plays
 and enforces things at the individual-track level, which is exactly the
 shape this prints.`,
 	Args: cobra.NoArgs,
@@ -40,10 +40,11 @@ shape this prints.`,
 			cfg.YouTube.CookiesFromBrowser = resolveBrowser
 		}
 
-		tracks, err := resolveInputDir(ctx, resolveInput, true)
+		queued, _, err := resolveInputDir(ctx, resolveInput, true)
 		if err != nil {
 			return err
 		}
+		tracks := plainTracks(queued)
 
 		out, err := json.MarshalIndent(tracks, "", "  ")
 		if err != nil {
@@ -57,7 +58,7 @@ shape this prints.`,
 }
 
 func init() {
-	resolveCmd.Flags().StringVar(&resolveInput, "input", "./in/", "directory of *.url files to resolve")
+	resolveCmd.Flags().StringVar(&resolveInput, "input", "./in/", "directory of album folders to resolve")
 	resolveCmd.Flags().StringVar(&resolveBrowser, "browser", "", "read cookies from this local browser instead of the default (vivaldi)")
 	rootCmd.AddCommand(resolveCmd)
 }

@@ -16,11 +16,11 @@ import (
 	"github.com/flocko-motion/hoerbox/internal/ytmusic"
 )
 
-// cachePathFor is the cache location for a .url file's own resolution:
-// co-located and named after it, so it's discoverable by just looking at
-// the directory, and deletable by name to force one playlist to refresh.
+// cachePathFor is the cache location for an album's own resolution: its
+// tracks.json, in the album's folder (see cmd/albumdir.go), so it's
+// discoverable by just looking, and deletable to force a refresh.
 func cachePathFor(urlFilePath string) string {
-	return urlFilePath + ".resolved.json"
+	return albumSibling(urlFilePath, albumTracksFile)
 }
 
 // urlCachePath is the cache location for a raw URL with no file of its

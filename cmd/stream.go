@@ -1,15 +1,15 @@
 // package: cmd / cli
 // type:    entrypoint
-// job:     `hoerbox stream` — resolves a URL (or ./in/*.url) and plays every track in order
+// job:     `hoerbox stream` — resolves a URL (or every album in ./in/) and plays every track in order
 // limits:  thin wiring; streaming logic lives in internal/ytmusic and internal/pcmpipe
 package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -17,12 +17,17 @@ import (
 
 	"github.com/flocko-motion/hoerbox/internal/downloadlog"
 	"github.com/flocko-motion/hoerbox/internal/pcmpipe"
+	"github.com/flocko-motion/hoerbox/internal/runstate"
 	"github.com/flocko-motion/hoerbox/internal/ytmusic"
 )
 
 // naturalizeFraction is the minimum share of a track's own runtime hoerbox
 // waits before starting the next download — see naturalizeWait.
 const naturalizeFraction = 0.5
+
+// maxConsecutiveFailures re-checks hoerbox's own setup (see checkSetup)
+// after this many failures in a row, even if each looked track-specific.
+const maxConsecutiveFailures = 3
 
 var (
 	streamOutput  string
@@ -34,18 +39,24 @@ var (
 
 var streamCmd = &cobra.Command{
 	Use:   "stream [youtube-music-url]",
-	Short: "Resolve a track/playlist/album URL (or ./in/*.url) and play every track in order",
+	Short: "Resolve a track/playlist/album URL (or every album in ./in/) and play every track in order",
 	Long: `Resolves a track, playlist, or album URL the same way "resolve" does,
 then plays each resolved track in turn: prints its metadata, streams it
 (yt-dlp fetches, ffmpeg decodes to PCM) to completion, then moves to the
 next. Exits once the whole list has played.
 
-With no URL argument, hoerbox reads every "*.url" file in --input
-(default ./in/) instead — one URL per file, e.g. "in/sandmaennchen.url"
-containing a single playlist link — and works through all of them as one
-combined list. This is the low-friction way to build up a local library:
-drop a .url file in for each playlist you want, then just run "hoerbox
-stream".
+With no URL argument, hoerbox reads every album in --input (default
+./in/) instead — one folder per album, e.g. "in/Sandmännchen - Folge 26/"
+whose album.url holds the album's playlist link — and works through all
+of them as one combined list. This is the low-friction way to build up a
+local library: "hoerbox add <url>" (or the GUI's Add) for each album you
+want, then just run "hoerbox stream". A bare "<name>.url" file dropped
+into ./in/ by hand works too: it's moved into its own folder. Albums paused with "hoerbox pause" are skipped; pausing or
+cancelling an album while it's downloading abandons that download.
+
+Only one "stream" runs at a time — a second one refuses to start. While
+it runs, "hoerbox status" shows what it's doing, and the last error any
+run hit.
 
 Every track's download is recorded to download-log.json in --output, so a
 track already marked "success" there is never re-fetched — re-running
@@ -87,21 +98,40 @@ Pass -v for lower-level debug detail on top of that.
     stream ending to whatever's reading it. There's no download-log here:
     nothing is written to disk to check a track's status against.`,
 	Args: cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) (err error) {
 		ctx := cmd.Context()
 		if streamBrowser != "" {
 			cfg.YouTube.CookiesFromBrowser = streamBrowser
 		}
 
-		var tracks []ytmusic.Track
-		var err error
+		lock, err := runstate.Acquire(cfg.DataDir)
+		if err != nil {
+			return err
+		}
+		defer lock.Release()
+		// Only now, holding the lock, is it safe to move old flat-layout
+		// albums into folders (see albumURLFiles).
+		if err := migrateFlatInput(streamInput); err != nil {
+			return err
+		}
+		rep = newReporter(cfg.DataDir)
+		defer func() { rep.finish(err) }()
+
+		rep.phase(runstate.PhaseResolving, "resolving albums...")
+		var tracks []queuedTrack
+		var paused []string
 		if len(args) == 1 {
-			tracks, err = resolveCached(ctx, urlCachePath(args[0]), args[0], streamRefresh)
+			var resolved []ytmusic.Track
+			resolved, err = resolveCached(ctx, urlCachePath(args[0]), args[0], streamRefresh)
+			tracks = queueTracks(resolved, "")
 		} else {
-			tracks, err = resolveInputDir(ctx, streamInput, streamRefresh)
+			tracks, paused, err = resolveInputDir(ctx, streamInput, streamRefresh)
 		}
 		if err != nil {
 			return err
+		}
+		for _, name := range paused {
+			printLine("album paused, its tracks will be skipped: %s", name)
 		}
 		if len(tracks) == 0 {
 			return fmt.Errorf("resolved zero playable tracks")
@@ -117,65 +147,155 @@ Pass -v for lower-level debug detail on top of that.
 	},
 }
 
-// resolveInputDir resolves every "*.url" file in dir into one combined
-// track list, in filename order, via resolveCached.
-func resolveInputDir(ctx context.Context, dir string, refresh bool) ([]ytmusic.Track, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("creating input directory %s: %w", dir, err)
-	}
+// queuedTrack is a track plus the album (its ./in/<album>/album.url) it's queued
+// from — "" for a URL given straight on the command line.
+type queuedTrack struct {
+	ytmusic.Track
+	Source string
+}
 
-	entries, err := os.ReadDir(dir)
+func plainTracks(queued []queuedTrack) []ytmusic.Track {
+	tracks := make([]ytmusic.Track, len(queued))
+	for i, q := range queued {
+		tracks[i] = q.Track
+	}
+	return tracks
+}
+
+func queueTracks(tracks []ytmusic.Track, source string) []queuedTrack {
+	queued := make([]queuedTrack, len(tracks))
+	for i, t := range tracks {
+		queued[i] = queuedTrack{Track: t, Source: source}
+	}
+	return queued
+}
+
+// resolveInputDir resolves every album in dir into one combined track
+// list, in album-name order, via resolveCached. Paused albums are
+// included — leaving them out would shift albumTrackNumbers for any
+// other album sharing their album name — and also listed by name in
+// paused; skipping their tracks is the caller's call (albumQueueState).
+func resolveInputDir(ctx context.Context, dir string, refresh bool) (tracks []queuedTrack, paused []string, err error) {
+	paths, err := albumURLFiles(dir)
 	if err != nil {
-		return nil, fmt.Errorf("reading input directory %s: %w", dir, err)
+		return nil, nil, err
+	}
+	if len(paths) == 0 {
+		return nil, nil, fmt.Errorf("no albums found in %s (add one with \"hoerbox add <url>\")", dir)
 	}
 
-	var names []string
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".url") {
-			names = append(names, e.Name())
+	for _, path := range paths {
+		if albumQueueState(path) == "paused" {
+			paused = append(paused, albumName(path))
 		}
-	}
-	sort.Strings(names)
-	if len(names) == 0 {
-		return nil, fmt.Errorf("no *.url files found in %s", dir)
-	}
 
-	var all []ytmusic.Track
-	for _, name := range names {
-		path := filepath.Join(dir, name)
 		content, err := os.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", path, err)
+			return nil, nil, fmt.Errorf("reading %s: %w", path, err)
 		}
 
 		rawURL := strings.TrimSpace(string(content))
-		tracks, err := resolveCached(ctx, cachePathFor(path), rawURL, refresh)
+		resolved, err := resolveCached(ctx, cachePathFor(path), rawURL, refresh)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		all = append(all, tracks...)
+		tracks = append(tracks, queueTracks(resolved, path)...)
 	}
-	return all, nil
+	return tracks, paused, nil
+}
+
+// errAlbumPaused and errAlbumCancelled are why watchAlbum abandoned a
+// track's download.
+var (
+	errAlbumPaused    = errors.New("album paused")
+	errAlbumCancelled = errors.New("album cancelled")
+)
+
+// watchAlbum cancels a track's download (with errAlbumPaused or
+// errAlbumCancelled as the cause) the moment its album is paused or
+// cancelled. Returns once ctx is done.
+func watchAlbum(ctx context.Context, cancel context.CancelCauseFunc, source string) {
+	if source == "" {
+		return
+	}
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			switch albumQueueState(source) {
+			case "paused":
+				cancel(errAlbumPaused)
+				return
+			case "cancelled":
+				cancel(errAlbumCancelled)
+				return
+			}
+		}
+	}
+}
+
+// downloadTrack runs one StreamTrack, abandoning it if the track's album
+// is paused or cancelled meanwhile — dequeued then reports why, and err
+// is meaningless.
+func downloadTrack(ctx context.Context, t queuedTrack, outPath string) (dequeued, err error) {
+	trackCtx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	go watchAlbum(trackCtx, cancel, t.Source)
+
+	err = ytmusic.StreamTrack(trackCtx, log, cfg, t.URL, outPath)
+	if cause := context.Cause(trackCtx); errors.Is(cause, errAlbumPaused) || errors.Is(cause, errAlbumCancelled) {
+		return cause, nil
+	}
+	return nil, err
+}
+
+// skipNotice prints "skipping <album> (paused)" once per album per run,
+// not once per track.
+type skipNotice map[string]bool
+
+func (n skipNotice) note(t queuedTrack, state string) {
+	if n[t.Source] {
+		return
+	}
+	n[t.Source] = true
+	printLine("skipping album %s (%s)", albumName(t.Source), state)
+}
+
+func trackStatus(i int, t queuedTrack) runstate.Track {
+	st := runstate.Track{Index: i + 1, Name: t.TrackName, Artist: t.Artist}
+	if t.Source != "" {
+		st.Playlist = albumName(t.Source)
+	}
+	return st
 }
 
 // runStreamToDirectory is the debug-dump mode: one file per track, each
 // its own subprocess. Tracks already a success in download-log.json are
 // skipped.
-func runStreamToDirectory(ctx context.Context, dir string, tracks []ytmusic.Track, fast bool) error {
+func runStreamToDirectory(ctx context.Context, dir string, tracks []queuedTrack, fast bool) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("creating output directory: %w", err)
 	}
 
 	mlog := downloadlog.Open(dir)
-	trackNos := albumTrackNumbers(tracks)
+	trackNos := albumTrackNumbers(plainTracks(tracks))
 
-	var prevTrack *ytmusic.Track
+	var prevTrack *queuedTrack
 	var prevStart time.Time
-	succeeded, failed, skipped := 0, 0, 0
+	c := runstate.Counts{Total: len(tracks)}
+	consecutiveFailures := 0
+	// setupVerified: yt-dlp+cookies are known to work right now (a track
+	// succeeded, or a probe passed), so a failure is the track's own fault.
+	setupVerified := false
+	skipped := skipNotice{}
 
 	printProgress := func() {
-		untried := len(tracks) - skipped - succeeded - failed
-		printLine("  progress: %d total, %d succeeded, %d failed, %d untried", len(tracks), skipped+succeeded, failed, untried)
+		rep.counts(c)
+		untried := c.Total - c.Skipped - c.Succeeded - c.Failed - c.Paused - c.Unavailable
+		printLine("  progress: %d total, %d succeeded, %d failed, %d unavailable, %d paused, %d untried", c.Total, c.Skipped+c.Succeeded, c.Failed, c.Unavailable, c.Paused, untried)
 	}
 
 	for i, t := range tracks {
@@ -184,8 +304,19 @@ func runStreamToDirectory(ctx context.Context, dir string, tracks []ytmusic.Trac
 			return fmt.Errorf("checking download log: %w", err)
 		}
 		if ok && e.Status == downloadlog.StatusSuccess {
-			skipped++
+			c.Skipped++
 			printProgress()
+			continue
+		}
+		if ok && e.Status == downloadlog.StatusUnavailable {
+			c.Unavailable++
+			printProgress()
+			continue
+		}
+		if state := albumQueueState(t.Source); state != "" {
+			skipped.note(t, state)
+			c.Paused++
+			rep.counts(c)
 			continue
 		}
 
@@ -193,63 +324,133 @@ func runStreamToDirectory(ctx context.Context, dir string, tracks []ytmusic.Trac
 			if err := naturalizeWait(ctx, prevTrack.LengthMs, prevStart); err != nil {
 				return err
 			}
+			// The wait can be long: check again.
+			if state := albumQueueState(t.Source); state != "" {
+				skipped.note(t, state)
+				c.Paused++
+				rep.counts(c)
+				continue
+			}
 		}
 
-		relPath := trackOutputPath(trackNos[i], t)
+		relPath := trackOutputPath(trackNos[i], t.Track)
 		outPath := filepath.Join(dir, relPath)
 		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 			return fmt.Errorf("creating output subdirectory: %w", err)
 		}
 		printLine("[%d/%d] %s — %s (%s)\n  -> %s", i+1, len(tracks), t.TrackName, t.Artist, formatDuration(t.LengthMs), outPath)
-		printToken("status", fmt.Sprintf("downloading %d/%d: %s — %s", i+1, len(tracks), t.TrackName, t.Artist))
+		rep.track(trackStatus(i, t), fmt.Sprintf("downloading %d/%d: %s — %s", i+1, len(tracks), t.TrackName, t.Artist))
 
 		start := time.Now()
-		streamErr := ytmusic.StreamTrack(ctx, log, cfg, t.URL, outPath)
+		dequeued, streamErr := downloadTrack(ctx, t, outPath)
 		prevTrack, prevStart = &t, start
-		if streamErr != nil && ctx.Err() != nil {
+		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if dequeued != nil {
+			_ = os.Remove(outPath) // a partial file, not a track
+			printLine("  abandoned: %s", dequeued)
+			skipped.note(t, strings.TrimPrefix(dequeued.Error(), "album "))
+			c.Paused++
+			printProgress()
+			printToken("refresh", "")
+			continue
 		}
 
 		entry := downloadlog.Entry{
 			URL: t.URL, TrackName: t.TrackName, Artist: t.Artist, Album: t.Album,
 			File: relPath, AttemptedAt: start,
 		}
-		if streamErr != nil {
-			entry.Status, entry.Error = downloadlog.StatusFailed, streamErr.Error()
-			printLine("  ! failed: %s", streamErr)
-			failed++
-		} else {
+		var setupErr error
+		if streamErr == nil {
 			entry.Status = downloadlog.StatusSuccess
-			succeeded++
+			c.Succeeded++
+			consecutiveFailures = 0
+			setupVerified = true
+		} else {
+			printLine("  ! failed: %s", streamErr)
+			rep.error(t.TrackName+" — "+t.Artist, streamErr.Error())
+			consecutiveFailures++
+			kind := ytmusic.KindOf(streamErr)
+			if kind == ytmusic.FailureBlocked || consecutiveFailures >= maxConsecutiveFailures {
+				setupVerified = false
+			}
+			if !setupVerified {
+				setupErr = checkSetup(ctx, streamErr)
+				setupVerified = setupErr == nil
+				consecutiveFailures = 0
+			}
+			entry.Error = streamErr.Error()
+			if setupVerified && kind == ytmusic.FailureUnavailable {
+				// Recorded so later runs skip it instead of re-failing on it.
+				entry.Status = downloadlog.StatusUnavailable
+				printLine("  unavailable on YouTube (removed or region-blocked): won't retry it")
+				c.Unavailable++
+			} else {
+				entry.Status = downloadlog.StatusFailed
+				c.Failed++
+			}
 		}
 		printProgress()
 		if err := mlog.Record(entry); err != nil {
 			return fmt.Errorf("recording download log: %w", err)
 		}
 		printToken("refresh", "")
+		if setupErr != nil {
+			return setupErr
+		}
 	}
 
-	printLine("done: %d succeeded, %d failed, %d already downloaded", succeeded, failed, skipped)
-	if failed > 0 {
+	summary := fmt.Sprintf("done: %d succeeded, %d failed, %d unavailable, %d already downloaded, %d paused", c.Succeeded, c.Failed, c.Unavailable, c.Skipped, c.Paused)
+	printLine("%s", summary)
+	if c.Failed > 0 {
 		printLine("run \"hoerbox stream\" again to retry failed tracks, or \"hoerbox stats\" for a summary")
 	}
-	printToken("status", "idle")
+	rep.phase(runstate.PhaseDone, summary)
 	return nil
+}
+
+// checkSetup runs ytmusic.Probe after a failure to tell a dead track from
+// a broken setup. A broken setup stops the run with the concrete fix,
+// since every further track would fail the same way.
+func checkSetup(ctx context.Context, lastErr error) error {
+	printLine("  checking whether yt-dlp and the cookies work at all...")
+	rep.phase(runstate.PhaseDownloading, "checking yt-dlp and cookies...")
+	d := ytmusic.Probe(ctx, log, cfg)
+	if d.Healthy {
+		printLine("  yt-dlp and cookies work: this failure is the track's own, carrying on")
+		return nil
+	}
+	printLine("! stopping: %s", d.Fix)
+	return fmt.Errorf("download setup is broken (%s) — last: %w", firstLine(d.Fix), lastErr)
+}
+
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(s, "\n")
+	return line
 }
 
 // runStreamToPipe is the continuous-hand-off mode: every track writes to
 // the same FIFO in turn, kept alive by pcmpipe (see its doc comment).
-func runStreamToPipe(ctx context.Context, fifoPath string, tracks []ytmusic.Track, fast bool) error {
+func runStreamToPipe(ctx context.Context, fifoPath string, tracks []queuedTrack, fast bool) error {
 	keepAlive, err := pcmpipe.Open(fifoPath)
 	if err != nil {
 		return fmt.Errorf("preparing output fifo: %w", err)
 	}
 	defer keepAlive.Close()
 
-	var prevTrack *ytmusic.Track
+	var prevTrack *queuedTrack
 	var prevStart time.Time
+	c := runstate.Counts{Total: len(tracks)}
+	skipped := skipNotice{}
 
 	for i, t := range tracks {
+		if state := albumQueueState(t.Source); state != "" {
+			skipped.note(t, state)
+			c.Paused++
+			rep.counts(c)
+			continue
+		}
 		if !fast && prevTrack != nil {
 			if err := naturalizeWait(ctx, prevTrack.LengthMs, prevStart); err != nil {
 				return err
@@ -257,38 +458,58 @@ func runStreamToPipe(ctx context.Context, fifoPath string, tracks []ytmusic.Trac
 		}
 
 		printLine("[%d/%d] %s — %s (%s)", i+1, len(tracks), t.TrackName, t.Artist, formatDuration(t.LengthMs))
+		rep.track(trackStatus(i, t), fmt.Sprintf("playing %d/%d: %s — %s", i+1, len(tracks), t.TrackName, t.Artist))
 
 		start := time.Now()
-		streamErr := ytmusic.StreamTrack(ctx, log, cfg, t.URL, fifoPath)
+		dequeued, streamErr := downloadTrack(ctx, t, fifoPath)
 		prevTrack, prevStart = &t, start
-		if streamErr != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
+		switch {
+		case ctx.Err() != nil:
+			return ctx.Err()
+		case dequeued != nil:
+			printLine("  abandoned: %s", dequeued)
+			c.Paused++
+		case streamErr != nil:
 			printLine("  ! failed: %s — skipping", streamErr)
+			rep.error(t.TrackName+" — "+t.Artist, streamErr.Error())
+			c.Failed++
+		default:
+			c.Succeeded++
 		}
+		rep.counts(c)
 	}
 
 	printLine("done")
+	rep.phase(runstate.PhaseDone, fmt.Sprintf("done: %d played, %d failed, %d paused", c.Succeeded, c.Failed, c.Paused))
 	return nil
 }
 
 // naturalizeWait blocks until at least naturalizeFraction of prevLengthMs
-// has elapsed since prevStart — see the package doc comment on why.
+// has elapsed since prevStart — see the package doc comment on why. The
+// status token ticks down once a second rather than firing once and
+// going quiet, so the GUI shows a live countdown instead of a stale
+// number for the whole wait.
 func naturalizeWait(ctx context.Context, prevLengthMs int, prevStart time.Time) error {
-	minGap := time.Duration(float64(prevLengthMs)*naturalizeFraction) * time.Millisecond
-	remaining := minGap - time.Since(prevStart)
-	if remaining <= 0 {
+	deadline := prevStart.Add(time.Duration(float64(prevLengthMs)*naturalizeFraction) * time.Millisecond)
+	if time.Until(deadline) <= 0 {
 		return nil
 	}
 
-	printLine("naturalizer: waiting %s before the next request (--fast to disable)", remaining.Round(time.Second))
-	printToken("status", fmt.Sprintf("waiting %s before the next download...", remaining.Round(time.Second)))
-	select {
-	case <-time.After(remaining):
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	printLine("naturalizer: waiting %s before the next request (--fast to disable)", time.Until(deadline).Round(time.Second))
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		remaining := time.Until(deadline).Round(time.Second)
+		if remaining <= 0 {
+			return nil
+		}
+		rep.phase(runstate.PhaseWaiting, fmt.Sprintf("waiting %s before the next download...", remaining))
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 }
 
@@ -352,7 +573,7 @@ func formatDuration(ms int) string {
 
 func init() {
 	streamCmd.Flags().StringVar(&streamOutput, "output", "./out/", "output target; a directory (default) writes one file per track, a file/FIFO path writes one continuous PCM stream")
-	streamCmd.Flags().StringVar(&streamInput, "input", "./in/", "directory of *.url files to resolve when no URL argument is given")
+	streamCmd.Flags().StringVar(&streamInput, "input", "./in/", "directory of album folders to resolve when no URL argument is given")
 	streamCmd.Flags().BoolVar(&streamFast, "fast", false, "disable the naturalizer pacing between downloads — for a quick smoke test, not routine use")
 	streamCmd.Flags().BoolVar(&streamRefresh, "refresh", false, "re-fetch URL resolution instead of using a cached one")
 	streamCmd.Flags().StringVar(&streamBrowser, "browser", "", "read cookies from this local browser instead of the default (vivaldi)")

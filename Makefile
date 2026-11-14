@@ -5,28 +5,46 @@ APP_ID := net.omnitopos.hoerbox
 
 .DEFAULT_GOAL := build
 
+# Fyne and GLFW each pass -lobjc to cgo; Apple's linker (Xcode 15+) warns
+# about the duplicate. It's harmless, so silence it on macOS.
+ifeq ($(shell uname),Darwin)
+export CGO_LDFLAGS += -Wl,-no_warn_duplicate_libraries
+endif
+
 .PHONY: build bundle install vet fmt lint check clean help
 
-build: ## Build the hoerbox binary to bin/hoerbox (default target)
+build: ## Build the hoerbox binary to bin/hoerbox in this repo (default target) — doesn't install anything
 	@mkdir -p bin
+	@echo "==> building $(BIN)"
 	go build -o $(BIN) .
+	@echo "==> built $(BIN) — run it as ./$(BIN), or \"make install\" to install it"
 
 bundle: build ## macOS only: package hoerbox.app here — a real double-clickable app, not a bare binary
+	@echo "==> packaging hoerbox.app (fyne package)"
 	go run fyne.io/tools/cmd/fyne@latest package --os darwin --exe $(BIN) --name hoerbox --app-id $(APP_ID) --icon Icon.png
 	# fyne package carries over the plain binary's own ad-hoc signature as-is,
 	# which doesn't cover Info.plist/Resources as a bundle signature must —
 	# Finder silently refuses to launch that on Apple Silicon. Re-sign the
 	# whole bundle properly.
+	@echo "==> signing hoerbox.app"
 	codesign --force --deep -s - hoerbox.app
 
-install: build ## Install to ~/Music/hoerbox (data + CLI) and ~/Applications (macOS launcher)
-	@mkdir -p $(INSTALL_DIR)/bin
-	@cp $(BIN) $(INSTALL_DIR)/bin/hoerbox
+# bundle (not build) on macOS: it builds first anyway, and depending on
+# both would run the build twice.
 ifeq ($(shell uname),Darwin)
-	@$(MAKE) bundle
+install: bundle
+else
+install: build
+endif
+install: ## Build, then install the CLI to ~/Music/hoerbox/bin and (macOS) hoerbox.app to ~/Applications
+	@echo "==> installing the CLI to $(INSTALL_DIR)/bin/hoerbox"
+	@mkdir -p $(INSTALL_DIR)/bin
+	cp $(BIN) $(INSTALL_DIR)/bin/hoerbox
+ifeq ($(shell uname),Darwin)
+	@echo "==> installing hoerbox.app to $(APP_DIR)"
 	@mkdir -p $(APP_DIR)
-	@rm -rf $(APP_DIR)/hoerbox.app
-	@mv hoerbox.app $(APP_DIR)/
+	rm -rf $(APP_DIR)/hoerbox.app
+	mv hoerbox.app $(APP_DIR)/
 endif
 	@echo "Installed."
 	@echo

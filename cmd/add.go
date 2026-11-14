@@ -1,6 +1,6 @@
 // package: cmd / cli
 // type:    entrypoint
-// job:     `hoerbox add` — resolves a URL and writes it into ./in/ as a named .url file
+// job:     `hoerbox add` — resolves a URL and queues it as a named album folder in ./in/
 // limits:  names the file from the first track only; refuses to overwrite an existing one
 package cmd
 
@@ -23,16 +23,16 @@ var (
 
 var addCmd = &cobra.Command{
 	Use:   "add <youtube-music-url>",
-	Short: "Resolve a URL and add it to ./in/ as a named .url file",
+	Short: "Resolve a URL and add it to ./in/ as a named album folder",
 	Long: `Resolves url, derives a filesystem-safe name from its first track's
 artist and album (falling back to the track name if there's no album —
-a bare single track has none), and writes a new "<name>.url" file into
---input (default ./in/) containing url.
+a bare single track has none), and creates a "<name>/" album folder in
+--input (default ./in/) holding url in its album.url.
 
-The resolution itself is cached alongside the new file (same mechanism
+The resolution itself is cached in the same folder (tracks.json) (same mechanism
 "resolve"/"stream" use), so "stream"/"stats" won't need to re-fetch it.
 
-Refuses to overwrite an existing file with the same derived name.`,
+Refuses to overwrite an existing album with the same derived name.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
@@ -53,7 +53,7 @@ Refuses to overwrite an existing file with the same derived name.`,
 	},
 }
 
-// addURLFile writes rawURL into a new "<name>.url" file under dir, named
+// addURLFile writes rawURL into a new album folder "<name>/" under dir, named
 // from tracks[0], and seeds its resolution cache with tracks so nothing
 // re-fetches it later.
 func addURLFile(_ context.Context, dir, rawURL string, tracks []ytmusic.Track) error {
@@ -61,13 +61,16 @@ func addURLFile(_ context.Context, dir, rawURL string, tracks []ytmusic.Track) e
 		return fmt.Errorf("creating input directory: %w", err)
 	}
 
-	path := filepath.Join(dir, addFileNameFor(tracks[0])+".url")
+	path := albumURLPath(dir, addFileNameFor(tracks[0]))
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("%s already exists", path)
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("checking %s: %w", path, err)
 	}
 
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating album folder: %w", err)
+	}
 	if err := os.WriteFile(path, []byte(rawURL+"\n"), 0o644); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
@@ -100,7 +103,7 @@ func addFileNameFor(t ytmusic.Track) string {
 }
 
 func init() {
-	addCmd.Flags().StringVar(&addInput, "input", "./in/", "directory to add the .url file to")
+	addCmd.Flags().StringVar(&addInput, "input", "./in/", "directory to add the album folder to")
 	addCmd.Flags().StringVar(&addBrowser, "browser", "", "read cookies from this local browser instead of the default (vivaldi)")
 	rootCmd.AddCommand(addCmd)
 }

@@ -6,7 +6,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 
@@ -24,7 +23,7 @@ var cleanCmd = &cobra.Command{
 	Long: `For every playlist in --input whose tracks all succeeded and still have
 their file (see "list" for that breakdown — "clean" only ever touches a
 playlist that's fully Done, never one with failures/missing files),
-removes its ".url" file, its cached ".url.resolved.json", and its
+removes its album folder (album.url, cached tracks.json), and its
 tracks' entries from --output's download-log.json.
 
 This is the "I'm done with this one" sweep: once a playlist has been
@@ -52,11 +51,8 @@ out of the queue rather than sitting there forever.`,
 				return fmt.Errorf("removing %s's download-log entries: %w", s.Name, err)
 			}
 
-			if err := os.Remove(cachePathFor(s.Path)); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("removing %s: %w", cachePathFor(s.Path), err)
-			}
-			if err := os.Remove(s.Path); err != nil {
-				return fmt.Errorf("removing %s: %w", s.Path, err)
+			if err := removeAlbumFiles(s.Path); err != nil {
+				return err
 			}
 
 			printLine("removed %s (%d tracks, all done)", s.Name, s.Total)
@@ -69,7 +65,7 @@ out of the queue rather than sitting there forever.`,
 }
 
 func init() {
-	cleanCmd.Flags().StringVar(&cleanInput, "input", "./in/", "directory of *.url files to clean")
+	cleanCmd.Flags().StringVar(&cleanInput, "input", "./in/", "directory of album folders to clean")
 	cleanCmd.Flags().StringVar(&cleanOutput, "output", "./out/", "directory containing the download log to update")
 	rootCmd.AddCommand(cleanCmd)
 }

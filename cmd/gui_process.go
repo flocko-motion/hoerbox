@@ -12,10 +12,13 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
+
+	"github.com/flocko-motion/hoerbox/internal/runstate"
 )
 
 // lineSink buffers to each newline and calls onLine per line. Safe as
@@ -98,10 +101,15 @@ func (g *guiApp) startStream() {
 
 		fyne.Do(func() {
 			g.startStopBtn.SetText("Start")
+			// The child normally records its own failure in status.json;
+			// this covers it dying before it could (e.g. refusing to
+			// start). showLastError picks whichever is newer.
 			if waitErr != nil {
-				g.statusLabel.SetText("stopped: " + waitErr.Error())
-			} else {
-				g.statusLabel.SetText("idle")
+				msg := g.lastChildLine
+				if msg == "" {
+					msg = waitErr.Error()
+				}
+				g.localErr = &runstate.Error{At: time.Now(), Message: "stream stopped: " + msg}
 			}
 		})
 		g.refreshList()
@@ -113,16 +121,19 @@ func (g *guiApp) startStream() {
 // anything else is narration, appended verbatim.
 func (g *guiApp) handleLine(line string) {
 	if rest, ok := strings.CutPrefix(line, tokenPrefix+" "); ok {
-		kind, text, _ := strings.Cut(rest, " ")
-		switch kind {
-		case "status":
-			fyne.Do(func() { g.statusLabel.SetText(text) })
-		case "refresh":
+		// "status"/"error" tokens are also in status.json, which
+		// pollStatus renders; only "refresh" needs acting on here.
+		if kind, _, _ := strings.Cut(rest, " "); kind == "refresh" {
 			g.refreshList()
 		}
 		return
 	}
-	fyne.Do(func() { g.appendTerminal(line) })
+	fyne.Do(func() {
+		if strings.TrimSpace(line) != "" {
+			g.lastChildLine = strings.TrimSpace(line)
+		}
+		g.appendTerminal(line)
+	})
 }
 
 // maxTerminalLines caps the terminal pane's buffer so a long-running
@@ -178,8 +189,9 @@ func (g *guiApp) refreshList() {
 
 	fyne.Do(func() {
 		g.tracks = tracks
-		g.sortTracks() // keep whatever column the user last sorted by
+		g.rebuildRows() // regroup, keeping the sort and the unfolded album
 		g.table.Refresh()
+		g.updateAlbumBar()
 	})
 }
 

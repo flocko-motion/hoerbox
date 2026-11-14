@@ -46,7 +46,11 @@ continuously.`,
 		}
 
 		for _, t := range tracks {
-			line := fmt.Sprintf("[%-9s] %-20s %s — %s", t.Status, t.Playlist, t.TrackName, t.Artist)
+			status := t.Status
+			if t.Paused && t.Status != "succeeded" {
+				status = "paused"
+			}
+			line := fmt.Sprintf("[%-9s] %-20s %s — %s", status, t.Playlist, t.TrackName, t.Artist)
 			if t.Error != "" {
 				line += ": " + t.Error
 			}
@@ -58,7 +62,7 @@ continuously.`,
 }
 
 func init() {
-	listCmd.Flags().StringVar(&listInput, "input", "./in/", "directory of *.url files to list")
+	listCmd.Flags().StringVar(&listInput, "input", "./in/", "directory of album folders to list")
 	listCmd.Flags().StringVar(&listOutput, "output", "./out/", "directory containing the download log to check against")
 	listCmd.Flags().BoolVar(&listJSON, "json", false, "print as JSON instead of a table")
 	rootCmd.AddCommand(listCmd)
