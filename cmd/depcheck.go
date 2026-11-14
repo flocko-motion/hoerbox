@@ -1,6 +1,6 @@
 // package: cmd / cli
 // type:    logic
-// job:     fails fast with a clear message if yt-dlp/ffmpeg/python3 aren't on PATH
+// job:     fails fast with a clear message if yt-dlp/ffmpeg/ffprobe/python3 aren't on PATH
 // limits:  only checks presence on PATH, not version compatibility
 package cmd
 
@@ -18,6 +18,7 @@ func checkDependencies() error {
 	deps := []struct{ bin, hint string }{
 		{"yt-dlp", "brew install yt-dlp  (or: pip install -U yt-dlp)"},
 		{"ffmpeg", "brew install ffmpeg"},
+		{"ffprobe", "brew install ffmpeg  (ffprobe ships with it)"},
 		{"python3", "install Python 3 — yt-dlp needs it at runtime"},
 	}
 

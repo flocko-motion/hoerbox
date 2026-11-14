@@ -35,6 +35,7 @@ var (
 	streamFast    bool
 	streamRefresh bool
 	streamBrowser string
+	streamFormat  string
 )
 
 var streamCmd = &cobra.Command{
@@ -78,11 +79,14 @@ Pass -v for lower-level debug detail on top of that.
 
 --output picks one of two modes:
 
-  - a directory (the default: ./out/): "Album/NNN - Artist - Trackname.wav"
-    under it, self-describing (double-click playable, no format flags
-    needed) — the layout Hörbert-style players expect, ordering each
-    folder's playback by the numeric prefix. Simplest mode: each track is
-    its own subprocess writing directly to its own file, no FIFO involved.
+  - a directory (the default: ./out/): "Album/NNN - Artist - Trackname.ogg"
+    under it — the archive. Each file is YouTube's own Opus stream,
+    untouched (no re-encoding), tagged with title/artist/album/track
+    number; the hörbert desktop software takes these as they are and
+    converts them for the player. --format wav writes decoded WAV
+    instead (~5x larger, untagged). Each folder's playback order is the
+    numeric prefix. Simplest mode: each track is its own subprocess
+    writing directly to its own file, no FIFO involved.
 
   - a file/FIFO path: one continuous raw PCM stream for the whole run,
     meant to be handed off live to a reader (the sibling audio-output
@@ -102,6 +106,13 @@ Pass -v for lower-level debug detail on top of that.
 		ctx := cmd.Context()
 		if streamBrowser != "" {
 			cfg.YouTube.CookiesFromBrowser = streamBrowser
+		}
+		switch streamFormat {
+		case "":
+		case ytmusic.ArchiveFormatOgg, ytmusic.ArchiveFormatWAV:
+			cfg.Audio.ArchiveFormat = streamFormat
+		default:
+			return fmt.Errorf("--format must be %q or %q, not %q", ytmusic.ArchiveFormatOgg, ytmusic.ArchiveFormatWAV, streamFormat)
 		}
 
 		lock, err := runstate.Acquire(cfg.DataDir)
@@ -237,15 +248,21 @@ func watchAlbum(ctx context.Context, cancel context.CancelCauseFunc, source stri
 	}
 }
 
-// downloadTrack runs one StreamTrack, abandoning it if the track's album
-// is paused or cancelled meanwhile — dequeued then reports why, and err
-// is meaningless.
-func downloadTrack(ctx context.Context, t queuedTrack, outPath string) (dequeued, err error) {
+// downloadTrack fetches one track to outPath — an archived .ogg (see
+// ytmusic.ArchiveTrack), else decoded PCM — abandoning it if the track's
+// album is paused or cancelled meanwhile: dequeued then reports why, and
+// err is meaningless.
+func downloadTrack(ctx context.Context, t queuedTrack, trackNo int, outPath string) (dequeued, err error) {
 	trackCtx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	go watchAlbum(trackCtx, cancel, t.Source)
 
-	err = ytmusic.StreamTrack(trackCtx, log, cfg, t.URL, outPath)
+	if strings.HasSuffix(outPath, "."+ytmusic.ArchiveFormatOgg) {
+		tags := ytmusic.ArchiveTags{Title: t.TrackName, Artist: t.Artist, Album: t.Album, TrackNo: trackNo}
+		err = ytmusic.ArchiveTrack(trackCtx, log, cfg, t.URL, outPath, tags)
+	} else {
+		err = ytmusic.StreamTrack(trackCtx, log, cfg, t.URL, outPath)
+	}
 	if cause := context.Cause(trackCtx); errors.Is(cause, errAlbumPaused) || errors.Is(cause, errAlbumCancelled) {
 		return cause, nil
 	}
@@ -333,7 +350,7 @@ func runStreamToDirectory(ctx context.Context, dir string, tracks []queuedTrack,
 			}
 		}
 
-		relPath := trackOutputPath(trackNos[i], t.Track)
+		relPath := trackOutputPath(trackNos[i], t.Track, cfg.Audio.ArchiveFormat)
 		outPath := filepath.Join(dir, relPath)
 		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 			return fmt.Errorf("creating output subdirectory: %w", err)
@@ -342,7 +359,7 @@ func runStreamToDirectory(ctx context.Context, dir string, tracks []queuedTrack,
 		rep.track(trackStatus(i, t), fmt.Sprintf("downloading %d/%d: %s — %s", i+1, len(tracks), t.TrackName, t.Artist))
 
 		start := time.Now()
-		dequeued, streamErr := downloadTrack(ctx, t, outPath)
+		dequeued, streamErr := downloadTrack(ctx, t, trackNos[i], outPath)
 		prevTrack, prevStart = &t, start
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -461,7 +478,7 @@ func runStreamToPipe(ctx context.Context, fifoPath string, tracks []queuedTrack,
 		rep.track(trackStatus(i, t), fmt.Sprintf("playing %d/%d: %s — %s", i+1, len(tracks), t.TrackName, t.Artist))
 
 		start := time.Now()
-		dequeued, streamErr := downloadTrack(ctx, t, fifoPath)
+		dequeued, streamErr := downloadTrack(ctx, t, i+1, fifoPath)
 		prevTrack, prevStart = &t, start
 		switch {
 		case ctx.Err() != nil:
@@ -587,10 +604,10 @@ func albumTrackNumbers(tracks []ytmusic.Track) []int {
 	return nos
 }
 
-// trackOutputPath builds a relative "Album/NNN - Artist - Trackname.wav"
+// trackOutputPath builds a relative "Album/NNN - Artist - Trackname.<ext>"
 // path — one folder per album, artist in the filename since a compilation
 // album's tracks don't share one. Empty fields are dropped.
-func trackOutputPath(trackNo int, t ytmusic.Track) string {
+func trackOutputPath(trackNo int, t ytmusic.Track, ext string) string {
 	folder := sanitizeFilenameComponent(t.Album)
 	if folder == "" {
 		folder = "untitled"
@@ -602,7 +619,7 @@ func trackOutputPath(trackNo int, t ytmusic.Track) string {
 			nameParts = append(nameParts, s)
 		}
 	}
-	filename := fmt.Sprintf("%03d - %s.wav", trackNo, strings.Join(nameParts, " - "))
+	filename := fmt.Sprintf("%03d - %s.%s", trackNo, strings.Join(nameParts, " - "), strings.TrimPrefix(ext, "."))
 	return filepath.Join(folder, filename)
 }
 
@@ -627,6 +644,7 @@ func init() {
 	streamCmd.Flags().StringVar(&streamInput, "input", "./in/", "directory of album folders to resolve when no URL argument is given")
 	streamCmd.Flags().BoolVar(&streamFast, "fast", false, "disable the naturalizer pacing between downloads — for a quick smoke test, not routine use")
 	streamCmd.Flags().BoolVar(&streamRefresh, "refresh", false, "re-fetch URL resolution instead of using a cached one")
+	streamCmd.Flags().StringVar(&streamFormat, "format", "", "file format per track in directory output: ogg (default: YouTube's Opus stream, untouched and tagged) or wav")
 	streamCmd.Flags().StringVar(&streamBrowser, "browser", "", "read cookies from this local browser instead of the default (vivaldi)")
 
 	rootCmd.AddCommand(streamCmd)

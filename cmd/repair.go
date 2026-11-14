@@ -56,7 +56,9 @@ without touching anything.`,
 				continue
 			}
 
-			wantPath := trackOutputPath(trackNos[i], t)
+			// Keep the file's own format: a track archived as WAV before
+			// the Ogg default stays a WAV, it just moves.
+			wantPath := trackOutputPath(trackNos[i], t, filepath.Ext(entry.File))
 			if entry.File == wantPath {
 				upToDate++
 				continue

@@ -36,6 +36,13 @@ type Audio struct {
 	// audio-output project expects.
 	SampleRate int
 	Channels   int
+
+	// ArchiveFormat is what each track's file in a directory --output
+	// holds: "ogg" (YouTube's own Opus stream, untouched and tagged) or
+	// "wav" (decoded PCM in the format above, ~5x larger). The hörbert
+	// desktop software takes either, converting to its own WAV anyway.
+	// The continuous FIFO mode always streams PCM.
+	ArchiveFormat string
 }
 
 // YouTube configures how hoerbox authenticates to yt-dlp for account-gated
@@ -64,6 +71,8 @@ func New() *Config {
 			OutputFormat: "s16le",
 			SampleRate:   44100,
 			Channels:     2,
+			// Not ytmusic.ArchiveFormatOgg: config can't import ytmusic.
+			ArchiveFormat: "ogg",
 		},
 		YouTube: YouTube{
 			CookiesFromBrowser: DefaultCookiesFromBrowser,
