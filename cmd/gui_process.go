@@ -140,7 +140,7 @@ func (g *guiApp) handleLine(line string) {
 	})
 }
 
-// maxTerminalLines caps the terminal pane's buffer so a long-running
+// maxTerminalLines caps the log window's buffer so a long-running
 // stream can't grow it (and the plain string-concat appendTerminal does)
 // without bound.
 const maxTerminalLines = 1000

@@ -1,6 +1,6 @@
 // package: cmd / cli
 // type:    logic
-// job:     a muted override for the status colors the track table uses (defaults read as an eyesore)
+// job:     a muted override for the status colors (defaults read as an eyesore), and progress bar tints
 // limits:  only touches success/error/warning; everything else falls through to the default theme
 package cmd
 
@@ -8,6 +8,7 @@ import (
 	"image/color"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/theme"
 )
 
@@ -39,4 +40,59 @@ func (m mutedTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) c
 	default:
 		return m.Theme.Color(name, variant)
 	}
+}
+
+// barTint is a progress bar's fill colour, by what it shows. Each state
+// of the run has its own — preparing, starting a track, downloading,
+// waiting — while plain progress (album, overall) stays neutral. The
+// "now" card's state word uses the matching colour (see phaseBadge).
+type barTint int
+
+const (
+	tintPreparing   barTint = iota // violet: starting up, resolving albums
+	tintStarting                   // amber: contacting YouTube, no data yet
+	tintDownloading                // green: data coming in
+	tintWaiting                    // blue: the pause between downloads
+	tintNeutral                    // grey: album and overall progress
+)
+
+func (b barTint) color(base fyne.Theme, variant fyne.ThemeVariant) color.Color {
+	dark := variant == theme.VariantDark
+	switch b {
+	case tintPreparing:
+		if dark {
+			return color.NRGBA{R: 0xa0, G: 0x8c, B: 0xc4, A: 0xff}
+		}
+		return color.NRGBA{R: 0x6f, G: 0x5a, B: 0x9c, A: 0xff}
+	case tintStarting:
+		return base.Color(theme.ColorNameWarning, variant)
+	case tintDownloading:
+		return base.Color(theme.ColorNameSuccess, variant)
+	case tintWaiting:
+		return base.Color(theme.ColorNamePrimary, variant)
+	default:
+		if dark {
+			return color.NRGBA{R: 0x7c, G: 0x82, B: 0x8c, A: 0xff}
+		}
+		return color.NRGBA{R: 0x8a, G: 0x8f, B: 0x98, A: 0xff}
+	}
+}
+
+// tintTheme recolours one widget's primary colour — what a progress bar
+// fills with.
+type tintTheme struct {
+	fyne.Theme
+	tint barTint
+}
+
+func (t tintTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	if name == theme.ColorNamePrimary {
+		return t.tint.color(t.Theme, variant)
+	}
+	return t.Theme.Color(name, variant)
+}
+
+// tinted wraps obj so its primary colour is tint's.
+func tinted(obj fyne.CanvasObject, tint barTint) *container.ThemeOverride {
+	return container.NewThemeOverride(obj, tintTheme{Theme: mutedTheme{Theme: theme.DefaultTheme()}, tint: tint})
 }

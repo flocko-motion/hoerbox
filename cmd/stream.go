@@ -259,9 +259,9 @@ func downloadTrack(ctx context.Context, t queuedTrack, trackNo int, outPath stri
 
 	if strings.HasSuffix(outPath, "."+ytmusic.ArchiveFormatOgg) {
 		tags := ytmusic.ArchiveTags{Title: t.TrackName, Artist: t.Artist, Album: t.Album, TrackNo: trackNo}
-		err = ytmusic.ArchiveTrack(trackCtx, log, cfg, t.URL, outPath, tags)
+		err = ytmusic.ArchiveTrack(trackCtx, log, cfg, t.URL, outPath, tags, rep.progress)
 	} else {
-		err = ytmusic.StreamTrack(trackCtx, log, cfg, t.URL, outPath)
+		err = ytmusic.StreamTrack(trackCtx, log, cfg, t.URL, outPath, rep.progress)
 	}
 	if cause := context.Cause(trackCtx); errors.Is(cause, errAlbumPaused) || errors.Is(cause, errAlbumCancelled) {
 		return cause, nil
@@ -282,7 +282,7 @@ func (n skipNotice) note(t queuedTrack, state string) {
 }
 
 func trackStatus(i int, t queuedTrack) runstate.Track {
-	st := runstate.Track{Index: i + 1, Name: t.TrackName, Artist: t.Artist}
+	st := runstate.Track{Index: i + 1, Name: t.TrackName, Artist: t.Artist, URL: t.URL}
 	if t.Source != "" {
 		st.Playlist = albumName(t.Source)
 	}
@@ -519,6 +519,7 @@ func naturalizeWait(ctx context.Context, prev queuedTrack, prevStart time.Time, 
 	if time.Until(until) <= 0 {
 		return nil
 	}
+	waitFrom := time.Now()
 	printLine("naturalizer: waiting %s before the next request (\"hoerbox boost\" to shorten, --fast to disable)", time.Until(until).Round(time.Second))
 
 	ticker := time.NewTicker(time.Second)
@@ -533,7 +534,7 @@ func naturalizeWait(ctx context.Context, prev queuedTrack, prevStart time.Time, 
 		if boosted != "" {
 			msg = fmt.Sprintf("waiting %s before the next download (boosting %s)...", remaining, boosted)
 		}
-		rep.phase(runstate.PhaseWaiting, msg)
+		rep.wait(waitFrom, until, msg)
 		select {
 		case <-ticker.C:
 		case <-ctx.Done():

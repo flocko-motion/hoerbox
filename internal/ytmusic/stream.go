@@ -23,8 +23,9 @@ import (
 // StreamTrack fetches url via yt-dlp, decodes to raw PCM via ffmpeg (piped
 // directly between the two), and writes it to outputPath — a plain file,
 // or a FIFO with a reader already attached (see internal/pcmpipe).
-func StreamTrack(ctx context.Context, log *logrus.Entry, cfg *config.Config, url string, outputPath string) error {
-	ytArgs := append([]string{"-f", "bestaudio", "-o", "-", "--no-warnings"}, cookieArgs(log, cfg)...)
+func StreamTrack(ctx context.Context, log *logrus.Entry, cfg *config.Config, url string, outputPath string, onProgress ProgressFunc) error {
+	ytArgs := append([]string{"-f", "bestaudio", "-o", "-", "--no-warnings"}, progressArgs...)
+	ytArgs = append(ytArgs, cookieArgs(log, cfg)...)
 	ytArgs = append(ytArgs, url)
 	ytCmd := exec.CommandContext(ctx, "yt-dlp", ytArgs...)
 
@@ -52,6 +53,7 @@ func StreamTrack(ctx context.Context, log *logrus.Entry, cfg *config.Config, url
 	ffCmd.Stdin = pipe
 
 	ytStderr := newTailLogger(log.WithField("proc", "yt-dlp"))
+	ytStderr.onProgress = onProgress
 	ffStderr := newTailLogger(log.WithField("proc", "ffmpeg"))
 	ytCmd.Stderr = ytStderr
 	ffCmd.Stderr = ffStderr
@@ -82,10 +84,13 @@ func StreamTrack(ctx context.Context, log *logrus.Entry, cfg *config.Config, url
 // "what's happening" narration for a subprocess — and keeps them around so
 // a failure can report real output instead of just an exit code.
 type tailLogger struct {
-	log  *logrus.Entry
-	buf  bytes.Buffer
-	w    *io.PipeWriter
-	done chan struct{}
+	log *logrus.Entry
+	// onProgress, if set, receives yt-dlp's progress lines (progressArgs)
+	// instead of them being logged.
+	onProgress ProgressFunc
+	buf        bytes.Buffer
+	w          *io.PipeWriter
+	done       chan struct{}
 }
 
 func newTailLogger(log *logrus.Entry) *tailLogger {
@@ -96,6 +101,12 @@ func newTailLogger(log *logrus.Entry) *tailLogger {
 		scanner := bufio.NewScanner(r)
 		for scanner.Scan() {
 			line := scanner.Text()
+			if done, size, ok := parseProgress(line); ok {
+				if t.onProgress != nil {
+					t.onProgress(done, size)
+				}
+				continue
+			}
 			t.log.Info(line)
 			t.buf.WriteString(line)
 			t.buf.WriteByte('\n')

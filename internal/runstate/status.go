@@ -31,6 +31,18 @@ type Track struct {
 	Name     string `json:"name"`
 	Artist   string `json:"artist"`
 	Playlist string `json:"playlist,omitempty"`
+	URL      string `json:"url,omitempty"`
+	// Downloaded and Size are the download's progress in bytes, as yt-dlp
+	// reports it; Size is 0 while unknown.
+	Downloaded int64 `json:"downloaded,omitempty"`
+	Size       int64 `json:"size,omitempty"`
+}
+
+// Wait is the pause between two downloads: it began at From and ends at
+// Until. Until can move mid-wait (a boost starting or ending).
+type Wait struct {
+	From  time.Time `json:"from"`
+	Until time.Time `json:"until"`
 }
 
 // Counts is a run's progress so far.
@@ -61,6 +73,7 @@ type Status struct {
 	Phase     string    `json:"phase"`
 	Message   string    `json:"message"`
 	Track     *Track    `json:"track,omitempty"`
+	Wait      *Wait     `json:"wait,omitempty"` // only while Phase is PhaseWaiting
 	Counts    Counts    `json:"counts"`
 	LastError *Error    `json:"last_error,omitempty"`
 

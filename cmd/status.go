@@ -79,6 +79,12 @@ func describeStatus(s runstate.Status, now time.Time) []string {
 		}
 		lines = append(lines, fmt.Sprintf("running (pid %d, started %s %s, %s ago)", s.PID, origin, s.StartedAt.Format("15:04"), ago(s.StartedAt, now)))
 		lines = append(lines, "  "+s.Message)
+		if t := s.Track; t != nil && t.Size > 0 {
+			lines = append(lines, "  track: "+downloadText(t))
+		}
+		if w := s.Wait; w != nil {
+			lines = append(lines, fmt.Sprintf("  next download in %s", max(w.Until.Sub(now), 0).Round(time.Second)))
+		}
 	case s.Active():
 		// Never got to say it ended: crashed or was killed mid-run.
 		lines = append(lines, fmt.Sprintf("not running — the last run (pid %d) died while %s, %s ago", s.PID, s.Phase, ago(s.UpdatedAt, now)))

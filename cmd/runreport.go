@@ -19,7 +19,14 @@ import (
 type reporter struct {
 	dir string
 	st  runstate.Status
+	// lastProgressFlush throttles progress-only writes (see progress);
+	// every other change is written at once.
+	lastProgressFlush time.Time
 }
+
+// progressFlushInterval caps progress-only status writes; the GUI polls
+// every 500ms, so faster writes would only cost disk I/O.
+const progressFlushInterval = 250 * time.Millisecond
 
 // rep is the running "stream"'s reporter — set in its RunE, like cfg/log
 // in root.go's PersistentPreRunE.
@@ -50,6 +57,9 @@ func (r *reporter) phase(phase, msg string) {
 	if phase != runstate.PhaseDownloading {
 		r.st.Track = nil
 	}
+	if phase != runstate.PhaseWaiting {
+		r.st.Wait = nil
+	}
 	r.flush()
 	printToken("status", msg)
 }
@@ -62,6 +72,27 @@ func (r *reporter) track(t runstate.Track, msg string) {
 
 func (r *reporter) counts(c runstate.Counts) {
 	r.st.Counts = c
+	r.flush()
+}
+
+// wait moves the run into the pause between downloads, from..until.
+// Called every tick, since until can move (see naturalizeWait).
+func (r *reporter) wait(from, until time.Time, msg string) {
+	r.st.Wait = &runstate.Wait{From: from, Until: until}
+	r.phase(runstate.PhaseWaiting, msg)
+}
+
+// progress records the current track's download progress in bytes (size
+// 0 if unknown). Throttled: it can fire many times a second.
+func (r *reporter) progress(downloaded, size int64) {
+	if r.st.Track == nil {
+		return
+	}
+	r.st.Track.Downloaded, r.st.Track.Size = downloaded, size
+	if time.Since(r.lastProgressFlush) < progressFlushInterval {
+		return
+	}
+	r.lastProgressFlush = time.Now()
 	r.flush()
 }
 

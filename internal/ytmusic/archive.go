@@ -41,7 +41,7 @@ type ArchiveTags struct {
 // ArchiveTrack downloads url's best Opus audio and writes it to
 // outputPath (an .ogg) with tags, without re-encoding. The file only
 // appears at outputPath once complete.
-func ArchiveTrack(ctx context.Context, log *logrus.Entry, cfg *config.Config, url, outputPath string, tags ArchiveTags) error {
+func ArchiveTrack(ctx context.Context, log *logrus.Entry, cfg *config.Config, url, outputPath string, tags ArchiveTags, onProgress ProgressFunc) error {
 	tmpRoot := filepath.Join(cfg.DataDir, "tmp")
 	if err := os.MkdirAll(tmpRoot, 0o755); err != nil {
 		return fmt.Errorf("creating temp dir: %w", err)
@@ -52,7 +52,7 @@ func ArchiveTrack(ctx context.Context, log *logrus.Entry, cfg *config.Config, ur
 	}
 	defer os.RemoveAll(tmpDir)
 
-	source, err := fetchAudio(ctx, log, cfg, url, tmpDir)
+	source, err := fetchAudio(ctx, log, cfg, url, tmpDir, onProgress)
 	if err != nil {
 		return err
 	}
@@ -92,14 +92,16 @@ func ArchiveTrack(ctx context.Context, log *logrus.Entry, cfg *config.Config, ur
 
 // fetchAudio has yt-dlp download url's best audio — Opus preferred — into
 // dir as-is, and returns the file's path.
-func fetchAudio(ctx context.Context, log *logrus.Entry, cfg *config.Config, url, dir string) (string, error) {
-	args := []string{"-f", "bestaudio[acodec=opus]/bestaudio", "--no-warnings", "--no-progress", "--no-part",
+func fetchAudio(ctx context.Context, log *logrus.Entry, cfg *config.Config, url, dir string, onProgress ProgressFunc) (string, error) {
+	args := []string{"-f", "bestaudio[acodec=opus]/bestaudio", "--no-warnings", "--no-part",
 		"-o", filepath.Join(dir, "source.%(ext)s")}
+	args = append(args, progressArgs...)
 	args = append(args, cookieArgs(log, cfg)...)
 	args = append(args, url)
 
 	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
 	out := newTailLogger(log.WithField("proc", "yt-dlp"))
+	out.onProgress = onProgress
 	cmd.Stdout, cmd.Stderr = out, out
 	runErr := cmd.Run()
 	last, all := out.tail()

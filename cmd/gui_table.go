@@ -12,7 +12,10 @@ import (
 	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
+
+	"github.com/flocko-motion/hoerbox/internal/runstate"
 )
 
 const (
@@ -45,13 +48,22 @@ type tableRow struct {
 func (g *guiApp) buildTable() {
 	g.table = widget.NewTable(
 		func() (int, int) { return len(g.rows), numColumns },
+		// Each cell is a label, or a progress bar where there's progress
+		// to show (see updateCell): neutral for an album's tracks done,
+		// the downloading colour for the downloading track (see barTint).
 		func() fyne.CanvasObject {
 			l := widget.NewLabel("")
 			l.Truncation = fyne.TextTruncateEllipsis
-			return l
+			albumBar, trackBar := widget.NewProgressBar(), widget.NewProgressBar()
+			albumBar.Hide()
+			trackBar.Hide()
+			return container.NewStack(l, tinted(albumBar, tintNeutral), tinted(trackBar, tintDownloading))
 		},
 		func(id widget.TableCellID, o fyne.CanvasObject) {
-			g.updateCell(g.rows[id.Row], id.Col, o.(*widget.Label))
+			cell := o.(*fyne.Container)
+			g.updateCell(g.rows[id.Row], id.Col, cell.Objects[0].(*widget.Label),
+				cell.Objects[1].(*container.ThemeOverride).Content.(*widget.ProgressBar),
+				cell.Objects[2].(*container.ThemeOverride).Content.(*widget.ProgressBar))
 		},
 	)
 	g.table.OnSelected = g.selectTrackRow
@@ -93,7 +105,22 @@ func (g *guiApp) clickedAlbum(playlist string) bool {
 	return true
 }
 
-func (g *guiApp) updateCell(r tableRow, col int, l *widget.Label) {
+func (g *guiApp) updateCell(r tableRow, col int, l *widget.Label, albumBar, trackBar *widget.ProgressBar) {
+	albumBar.Hide()
+	trackBar.Hide()
+	if fraction, text, ok := g.cellProgress(r, col); ok {
+		bar := trackBar
+		if r.track == nil {
+			bar = albumBar
+		}
+		l.Hide()
+		bar.TextFormatter = func() string { return text }
+		bar.SetValue(fraction)
+		bar.Show()
+		return
+	}
+	l.Show()
+
 	if r.track == nil {
 		l.Text = albumCellText(r.group, col, g.expandedAlbum == r.group.playlist)
 		l.TextStyle = fyne.TextStyle{Bold: true}
@@ -101,6 +128,13 @@ func (g *guiApp) updateCell(r tableRow, col int, l *widget.Label) {
 	} else {
 		t := *r.track
 		l.Text = cellText(t, col)
+		if col == colStatus && g.downloadingTrack(r) != nil { // no data yet, see cellProgress
+			l.Text = "starting…"
+			l.TextStyle = fyne.TextStyle{}
+			l.Importance = widget.WarningImportance
+			l.Refresh()
+			return
+		}
 		if col == colTrackName {
 			l.Text = "    " + l.Text
 		}
@@ -111,6 +145,32 @@ func (g *guiApp) updateCell(r tableRow, col int, l *widget.Label) {
 		}
 	}
 	l.Refresh()
+}
+
+// cellProgress is what a cell shows as a progress bar instead of text:
+// an album's tracks done in its Track Name column, and the downloading
+// track's progress in its Status column.
+func (g *guiApp) cellProgress(r tableRow, col int) (fraction float64, text string, ok bool) {
+	switch {
+	case r.track == nil && col == colTrackName:
+		n := albumCounts(r.group)
+		done := n["succeeded"] + n["unavailable"]
+		return ratio(done, len(r.group.tracks)), fmt.Sprintf("%d of %d tracks", done, len(r.group.tracks)), true
+	case r.track != nil && col == colStatus:
+		if t := g.downloadingTrack(r); t != nil && t.Size > 0 {
+			return downloadFraction(t), downloadText(t), true
+		}
+	}
+	return 0, "", false
+}
+
+// downloadingTrack is the run's current track if r is its row, else nil.
+func (g *guiApp) downloadingTrack(r tableRow) *runstate.Track {
+	s := g.lastStatus
+	if r.track == nil || !s.Running || s.Track == nil || s.Track.URL != r.track.URL {
+		return nil
+	}
+	return s.Track
 }
 
 // pausedTrack is whether t still needs downloading but its album is
@@ -235,7 +295,7 @@ func commonField(tracks []TrackStatus, field func(TrackStatus) string, fallback 
 // oneLine collapses a (possibly multi-line, possibly huge) error into one
 // short line for a fixed-height table cell — Truncation alone doesn't
 // stop an embedded newline from ballooning the row's own height; the
-// terminal pane is where the full story belongs.
+// log window (see showLogs) is where the full story belongs.
 func oneLine(s string) string {
 	s = strings.Join(strings.Fields(s), " ")
 	const maxLen = 160

@@ -16,6 +16,7 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/spf13/cobra"
@@ -60,6 +61,7 @@ type guiApp struct {
 	startStopBtn  *widget.Button
 	terminal      *widget.Entry
 	terminalPanel *container.Scroll
+	logWin        fyne.Window // holds terminalPanel; hidden, not closed, when dismissed
 
 	tracks []TrackStatus // last "list --json" result, playlist-grouped, newest-added first
 
@@ -76,13 +78,19 @@ type guiApp struct {
 	sortAsc bool
 
 	// The status panel — see cmd/gui_status.go.
-	nowTitle, nowDetail *widget.Label
-	errLabel            *widget.Label
-	errBanner           *fyne.Container
-	errDismissedAt      time.Time
-	localErr            *runstate.Error // our own "stream" child died before recording why
-	lastCounts          runstate.Counts
-	lastRunning         bool
+	phaseLabel, nowTitle, nowAlbum, nowFooter *widget.Label
+	activityLabel                             *widget.Label
+	downloadBar, waitBar                      *widget.ProgressBar // see barTint for the colours
+	albumProgress, overallBar                 *widget.ProgressBar
+	preparingBusy, startingBusy               *widget.ProgressBarInfinite
+	activityRow, albumRow, overallRow         *fyne.Container
+	lastNowAlbum                              string // see nowAlbumName
+	errLabel                                  *widget.Label
+	errBanner                                 *fyne.Container
+	errDismissedAt                            time.Time
+	localErr                                  *runstate.Error // our own "stream" child died before recording why
+	lastCounts                                runstate.Counts
+	lastRunning                               bool
 
 	boostBtn *widget.Button // see toggleBoost
 
@@ -94,6 +102,7 @@ type guiApp struct {
 
 	// Album controls: act on the album of the last-selected track.
 	albumLabel    *widget.Label
+	albumControls *fyne.Container // hidden while no album is selected
 	pauseBtn      *widget.Button
 	cancelBtn     *widget.Button
 	selectedAlbum string
@@ -130,8 +139,9 @@ func (g *guiApp) build() {
 	})
 	g.win = a.NewWindow("hoerbox")
 
-	g.startStopBtn = widget.NewButton("Start", g.toggleStream)
-	g.boostBtn = widget.NewButton("Boost", g.toggleBoost)
+	g.startStopBtn = widget.NewButtonWithIcon("Start", theme.MediaPlayIcon(), g.toggleStream)
+	g.startStopBtn.Importance = widget.HighImportance
+	g.boostBtn = widget.NewButtonWithIcon("Boost", theme.MediaFastForwardIcon(), g.toggleBoost)
 	g.buildTable()
 
 	g.terminal = widget.NewMultiLineEntry()
@@ -139,22 +149,39 @@ func (g *guiApp) build() {
 	g.terminal.Disable()
 	g.terminalPanel = container.NewScroll(g.terminal)
 
+	// The raw log lives in its own window, opened by "Logs": the panel
+	// and the table say what's going on, the log is for digging in. It
+	// keeps collecting while hidden.
+	g.logWin = a.NewWindow("hoerbox — log")
+	g.logWin.SetContent(g.terminalPanel)
+	g.logWin.Resize(fyne.NewSize(800, 500))
+	g.logWin.SetCloseIntercept(g.logWin.Hide)
+	// Closing the main window quits, log window or not.
+	g.win.SetMaster()
+
+	// Run controls left, housekeeping right.
 	toolbar := container.NewHBox(
-		widget.NewButton("Add", g.showAddDialog),
+		widget.NewButtonWithIcon("Add", theme.ContentAddIcon(), g.showAddDialog),
 		g.startStopBtn,
 		g.boostBtn,
-		widget.NewButton("Remove Done", g.removeDone),
-		widget.NewButton("Refresh", func() { go g.refreshList() }),
-		widget.NewButton("Open Folder", g.openFolder),
-		widget.NewButton("Browser", g.showBrowserDialog),
+		layout.NewSpacer(),
+		widget.NewButtonWithIcon("Remove Done", theme.DeleteIcon(), g.removeDone),
+		widget.NewButtonWithIcon("Refresh", theme.ViewRefreshIcon(), func() { go g.refreshList() }),
+		widget.NewButtonWithIcon("Open Folder", theme.FolderOpenIcon(), g.openFolder),
+		widget.NewButtonWithIcon("Browser", theme.AccountIcon(), g.showBrowserDialog),
+		widget.NewButtonWithIcon("Logs", theme.ListIcon(), g.showLogs),
 	)
 
-	split := container.NewVSplit(g.table, g.terminalPanel)
-	split.Offset = 0.6
-
 	top := container.NewVBox(toolbar, g.buildStatusPanel())
-	g.win.SetContent(container.NewBorder(top, nil, nil, nil, split))
+	g.win.SetContent(container.NewBorder(top, nil, nil, nil, g.table))
 	g.win.Resize(fyne.NewSize(900, 600))
+}
+
+// showLogs opens (or raises) the log window, scrolled to the newest line.
+func (g *guiApp) showLogs() {
+	g.logWin.Show()
+	g.logWin.RequestFocus()
+	g.terminalPanel.ScrollToBottom()
 }
 
 // showFatalErrorDialog is Execute's last resort when hoerbox can't reach
