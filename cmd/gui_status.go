@@ -6,6 +6,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -77,8 +78,8 @@ func (g *guiApp) showStatus(s runstate.Status, ok bool) {
 		g.startStopBtn.SetText("Stop")
 		g.startStopBtn.Enable()
 	case s.Running:
-		g.startStopBtn.SetText(fmt.Sprintf("Running (pid %d)", s.PID))
-		g.startStopBtn.Disable()
+		g.startStopBtn.SetText("Stop")
+		g.startStopBtn.Enable()
 	default:
 		g.startStopBtn.SetText("Start")
 		g.startStopBtn.Enable()
@@ -96,7 +97,7 @@ func (g *guiApp) showStatus(s runstate.Status, ok bool) {
 		g.nowTitle.SetText(title)
 		detail := fmt.Sprintf("running %s (pid %d)", ago(s.StartedAt, now), s.PID)
 		if !own {
-			detail += ", started outside this window"
+			detail += ", " + foreignOrigin(s)
 		}
 		if s.Counts.Total > 0 {
 			detail = describeCounts(s.Counts) + " · " + detail
@@ -114,8 +115,75 @@ func (g *guiApp) showStatus(s runstate.Status, ok bool) {
 		go g.refreshList()
 	}
 	g.lastCounts, g.lastRunning = s.Counts, s.Running
+	g.lastStatus = s
+
+	// The run we deferred to at startup is over: if it was stopped
+	// (its window closed, or someone stopped it) or died, carry on with
+	// our own. One that finished, or failed, is left alone — re-running
+	// would only repeat it.
+	if g.wantStream && !own && !s.Running && (s.Phase == runstate.PhaseStopped || s.Active()) {
+		g.wantStream = false
+		go g.startStream()
+	}
 
 	g.showLastError(s.LastError)
+	g.showBoost()
+}
+
+// foreignOrigin says where a run this window didn't start came from.
+func foreignOrigin(s runstate.Status) string {
+	if s.StartedBy == "gui" {
+		return "started by another hoerbox window"
+	}
+	return "started from a terminal"
+}
+
+// confirmStopForeign asks before stopping a run another window or a
+// terminal started, then signals it the same graceful way Stop does our own.
+func (g *guiApp) confirmStopForeign(s runstate.Status) {
+	dialog.ShowConfirm("Stop download",
+		fmt.Sprintf("The running download (pid %d) was %s.\n\nStop it?", s.PID, foreignOrigin(s)),
+		func(ok bool) {
+			if !ok {
+				return
+			}
+			g.wantStream = false // stopping, not handing over: don't restart it here
+			p, err := os.FindProcess(s.PID)
+			if err == nil {
+				err = p.Signal(os.Interrupt)
+			}
+			if err != nil {
+				dialog.ShowError(fmt.Errorf("stopping pid %d: %w", s.PID, err), g.win)
+			}
+		}, g.win)
+}
+
+// showBoost labels the Boost button with the boosted album, if any.
+func (g *guiApp) showBoost() {
+	text := "Boost Album"
+	if b, ok := runstate.ReadBoost(cfg.DataDir); ok {
+		text = "Boost on: next album"
+		if b.Album != "" {
+			text = "Boost on: " + b.Album
+		}
+		g.boostBtn.Importance = widget.HighImportance
+	} else {
+		g.boostBtn.Importance = widget.MediumImportance
+	}
+	if g.boostBtn.Text != text {
+		g.boostBtn.SetText(text)
+	}
+	g.boostBtn.Refresh()
+}
+
+// toggleBoost is the Boost button's handler: boosts the album
+// downloading now (see "hoerbox boost"), or ends the boost that's on.
+func (g *guiApp) toggleBoost() {
+	if _, ok := runstate.ReadBoost(cfg.DataDir); !ok {
+		go g.runOneShot("boost")
+	} else {
+		go g.runOneShot("boost", "off")
+	}
 }
 
 // showLastError shows the newer of e (from status.json) and g.localErr

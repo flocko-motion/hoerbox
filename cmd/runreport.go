@@ -26,8 +26,13 @@ type reporter struct {
 var rep *reporter
 
 func newReporter(dir string) *reporter {
+	startedBy := "terminal"
+	if os.Getenv(parentWatchFDEnv) != "" { // see watchParentPipe: only a GUI sets it
+		startedBy = "gui"
+	}
 	r := &reporter{dir: dir, st: runstate.Status{
 		PID:       os.Getpid(),
+		StartedBy: startedBy,
 		StartedAt: time.Now(),
 	}}
 	// The last error outlives the run that hit it: that's the point of
@@ -71,6 +76,10 @@ func (r *reporter) error(track, msg string) {
 func (r *reporter) finish(err error) {
 	switch {
 	case err == nil:
+		// A finished run is done with every album, boosted one included.
+		if err := runstate.ClearBoost(r.dir); err != nil {
+			log.Debugf("ending boost: %s", err)
+		}
 		if r.st.Phase != runstate.PhaseDone {
 			r.phase(runstate.PhaseDone, "done")
 		}

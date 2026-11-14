@@ -52,6 +52,9 @@ which is kept after that run ends, so you can still see why it stopped.
 		for _, line := range describeStatus(s, time.Now()) {
 			printLine("%s", line)
 		}
+		if b, ok := runstate.ReadBoost(cfg.DataDir); ok {
+			printLine("  %s — \"hoerbox boost off\" to end it", describeBoost(b))
+		}
 		if e := s.LastError; e != nil {
 			printLine("")
 			printLine("last error (%s, %s ago):", e.At.Format("Mon 15:04"), ago(e.At, time.Now()))
@@ -70,7 +73,11 @@ func describeStatus(s runstate.Status, now time.Time) []string {
 	var lines []string
 	switch {
 	case s.Running:
-		lines = append(lines, fmt.Sprintf("running (pid %d, started %s, %s ago)", s.PID, s.StartedAt.Format("15:04"), ago(s.StartedAt, now)))
+		origin := "from a terminal"
+		if s.StartedBy == "gui" {
+			origin = "by the hoerbox window"
+		}
+		lines = append(lines, fmt.Sprintf("running (pid %d, started %s %s, %s ago)", s.PID, origin, s.StartedAt.Format("15:04"), ago(s.StartedAt, now)))
 		lines = append(lines, "  "+s.Message)
 	case s.Active():
 		// Never got to say it ended: crashed or was killed mid-run.

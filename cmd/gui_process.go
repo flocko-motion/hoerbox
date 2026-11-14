@@ -57,6 +57,10 @@ func (g *guiApp) toggleStream() {
 		_ = running.Process.Signal(os.Interrupt) // graceful: cascades to yt-dlp/ffmpeg, see cmd/root.go
 		return
 	}
+	if s := g.lastStatus; s.Running {
+		g.confirmStopForeign(s)
+		return
+	}
 	g.startStream()
 }
 

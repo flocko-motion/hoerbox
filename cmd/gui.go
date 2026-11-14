@@ -84,6 +84,14 @@ type guiApp struct {
 	lastCounts          runstate.Counts
 	lastRunning         bool
 
+	boostBtn *widget.Button // see toggleBoost
+
+	// wantStream: start our own "stream" as soon as the one running
+	// elsewhere stops by itself. lastStatus: the latest status.json read.
+	// Both only touched on Fyne's goroutine.
+	wantStream bool
+	lastStatus runstate.Status
+
 	// Album controls: act on the album of the last-selected track.
 	albumLabel    *widget.Label
 	pauseBtn      *widget.Button
@@ -111,14 +119,19 @@ func (g *guiApp) build() {
 		go g.refreshList()
 		go g.pollStatus()
 		// Only one "stream" at a time: if one's already going (another
-		// window, a terminal), follow it rather than start a second.
+		// window, a terminal), follow it rather than start a second —
+		// and take over once it stops (see showStatus), which also
+		// covers a just-closed window's run still shutting down.
+		g.wantStream = true
 		if !runstate.IsRunning(cfg.DataDir) {
+			g.wantStream = false
 			go g.startStream()
 		}
 	})
 	g.win = a.NewWindow("hoerbox")
 
 	g.startStopBtn = widget.NewButton("Start", g.toggleStream)
+	g.boostBtn = widget.NewButton("Boost", g.toggleBoost)
 	g.buildTable()
 
 	g.terminal = widget.NewMultiLineEntry()
@@ -129,6 +142,7 @@ func (g *guiApp) build() {
 	toolbar := container.NewHBox(
 		widget.NewButton("Add", g.showAddDialog),
 		g.startStopBtn,
+		g.boostBtn,
 		widget.NewButton("Remove Done", g.removeDone),
 		widget.NewButton("Refresh", func() { go g.refreshList() }),
 		widget.NewButton("Open Folder", g.openFolder),

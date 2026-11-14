@@ -321,7 +321,7 @@ func runStreamToDirectory(ctx context.Context, dir string, tracks []queuedTrack,
 		}
 
 		if !fast && prevTrack != nil {
-			if err := naturalizeWait(ctx, prevTrack.LengthMs, prevStart); err != nil {
+			if err := naturalizeWait(ctx, *prevTrack, prevStart, t); err != nil {
 				return err
 			}
 			// The wait can be long: check again.
@@ -452,7 +452,7 @@ func runStreamToPipe(ctx context.Context, fifoPath string, tracks []queuedTrack,
 			continue
 		}
 		if !fast && prevTrack != nil {
-			if err := naturalizeWait(ctx, prevTrack.LengthMs, prevStart); err != nil {
+			if err := naturalizeWait(ctx, *prevTrack, prevStart, t); err != nil {
 				return err
 			}
 		}
@@ -484,33 +484,84 @@ func runStreamToPipe(ctx context.Context, fifoPath string, tracks []queuedTrack,
 	return nil
 }
 
-// naturalizeWait blocks until at least naturalizeFraction of prevLengthMs
-// has elapsed since prevStart — see the package doc comment on why. The
-// status token ticks down once a second rather than firing once and
-// going quiet, so the GUI shows a live countdown instead of a stale
-// number for the whole wait.
-func naturalizeWait(ctx context.Context, prevLengthMs int, prevStart time.Time) error {
-	deadline := prevStart.Add(time.Duration(float64(prevLengthMs)*naturalizeFraction) * time.Millisecond)
-	if time.Until(deadline) <= 0 {
-		return nil
+// naturalizeWait blocks until at least naturalizeFraction of prev's
+// length has elapsed since prevStart — see the package doc comment on
+// why — or boostFraction while next's album is boosted ("hoerbox
+// boost"). Both are re-checked once a second, so a boost started mid-wait
+// cuts the wait short, and the GUI shows a live countdown.
+func naturalizeWait(ctx context.Context, prev queuedTrack, prevStart time.Time, next queuedTrack) error {
+	deadline := func() (time.Time, string) {
+		fraction, boosted := naturalizeFraction, boostFor(prev, next)
+		if boosted != "" {
+			fraction = boostFraction
+		}
+		return prevStart.Add(time.Duration(float64(prev.LengthMs)*fraction) * time.Millisecond), boosted
 	}
 
-	printLine("naturalizer: waiting %s before the next request (--fast to disable)", time.Until(deadline).Round(time.Second))
+	until, _ := deadline()
+	if time.Until(until) <= 0 {
+		return nil
+	}
+	printLine("naturalizer: waiting %s before the next request (\"hoerbox boost\" to shorten, --fast to disable)", time.Until(until).Round(time.Second))
 
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
-		remaining := time.Until(deadline).Round(time.Second)
+		until, boosted := deadline()
+		remaining := time.Until(until).Round(time.Second)
 		if remaining <= 0 {
 			return nil
 		}
-		rep.phase(runstate.PhaseWaiting, fmt.Sprintf("waiting %s before the next download...", remaining))
+		msg := fmt.Sprintf("waiting %s before the next download...", remaining)
+		if boosted != "" {
+			msg = fmt.Sprintf("waiting %s before the next download (boosting %s)...", remaining, boosted)
+		}
+		rep.phase(runstate.PhaseWaiting, msg)
 		select {
 		case <-ticker.C:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
+}
+
+// boostFor returns the boosted album's name if the pause before next
+// should be a boosted one, else "". A boost for "the next album" is
+// bound to next's album here. A boost whose album prev was from, but
+// next isn't, is over — the run has moved on — and is ended.
+func boostFor(prev, next queuedTrack) string {
+	b, ok := runstate.ReadBoost(cfg.DataDir)
+	if !ok {
+		return ""
+	}
+	nextAlbum := sourceAlbum(next)
+	if b.Album == "" {
+		b.Album = nextAlbum
+		if err := runstate.SetBoost(cfg.DataDir, b); err != nil {
+			log.Debugf("binding boost: %s", err)
+		}
+	}
+
+	switch b.Album {
+	case nextAlbum:
+		return b.Album
+	case sourceAlbum(prev):
+		if err := runstate.ClearBoost(cfg.DataDir); err != nil {
+			log.Debugf("ending boost: %s", err)
+		}
+		printLine("boost ended: done with %s", b.Album)
+		return ""
+	default:
+		return "" // not reached yet
+	}
+}
+
+// sourceAlbum is t's album name, or "" for a URL given on the command line.
+func sourceAlbum(t queuedTrack) string {
+	if t.Source == "" {
+		return ""
+	}
+	return albumName(t.Source)
 }
 
 // isDirectoryOutput reports whether --output names a directory: it exists

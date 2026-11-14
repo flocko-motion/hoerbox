@@ -55,6 +55,7 @@ type Error struct {
 // Status is what data/status.json holds.
 type Status struct {
 	PID       int       `json:"pid"`
+	StartedBy string    `json:"started_by"` // "gui" (a hoerbox window's own run) or "terminal"
 	StartedAt time.Time `json:"started_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Phase     string    `json:"phase"`
