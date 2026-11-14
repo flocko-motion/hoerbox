@@ -42,17 +42,19 @@ func (m mutedTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) c
 	}
 }
 
-// barTint is a progress bar's fill colour, by what it shows. Each state
-// of the run has its own — preparing, starting a track, downloading,
-// waiting — while plain progress (album, overall) stays neutral. The
-// "now" card's state word uses the matching colour (see phaseBadge).
+// barTint is a progress bar's fill colour, by what it shows. The cycle
+// every track goes through follows a traffic light: red waiting (hold),
+// amber starting (get ready), green downloading (go). Preparing sits
+// outside that cycle in violet, and plain progress (album, overall)
+// stays neutral. The "now" card's state word uses the matching colour
+// (see phaseBadge).
 type barTint int
 
 const (
 	tintPreparing   barTint = iota // violet: starting up, resolving albums
 	tintStarting                   // amber: contacting YouTube, no data yet
 	tintDownloading                // green: data coming in
-	tintWaiting                    // blue: the pause between downloads
+	tintWaiting                    // red: the pause between downloads
 	tintNeutral                    // grey: album and overall progress
 )
 
@@ -69,7 +71,7 @@ func (b barTint) color(base fyne.Theme, variant fyne.ThemeVariant) color.Color {
 	case tintDownloading:
 		return base.Color(theme.ColorNameSuccess, variant)
 	case tintWaiting:
-		return base.Color(theme.ColorNamePrimary, variant)
+		return base.Color(theme.ColorNameError, variant)
 	default:
 		if dark {
 			return color.NRGBA{R: 0x7c, G: 0x82, B: 0x8c, A: 0xff}

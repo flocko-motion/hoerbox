@@ -61,7 +61,8 @@ type guiApp struct {
 	startStopBtn  *widget.Button
 	terminal      *widget.Entry
 	terminalPanel *container.Scroll
-	logWin        fyne.Window // holds terminalPanel; hidden, not closed, when dismissed
+	logWin        fyne.Window   // holds terminalPanel; hidden, not closed, when dismissed
+	statusLine    *widget.Label // the bottom bar: the log window's last line (see appendTerminal)
 
 	tracks []TrackStatus // last "list --json" result, playlist-grouped, newest-added first
 
@@ -168,12 +169,19 @@ func (g *guiApp) build() {
 		widget.NewButtonWithIcon("Remove Done", theme.DeleteIcon(), g.removeDone),
 		widget.NewButtonWithIcon("Refresh", theme.ViewRefreshIcon(), func() { go g.refreshList() }),
 		widget.NewButtonWithIcon("Open Folder", theme.FolderOpenIcon(), g.openFolder),
-		widget.NewButtonWithIcon("Browser", theme.AccountIcon(), g.showBrowserDialog),
-		widget.NewButtonWithIcon("Logs", theme.ListIcon(), g.showLogs),
+		widget.NewButtonWithIcon("Browser", theme.SettingsIcon(), g.showBrowserDialog),
 	)
 
+	// The bottom bar is the slim log: the newest line, usually enough to
+	// see what yt-dlp is up to; "Logs" opens the whole thing.
+	g.statusLine = widget.NewLabel("")
+	g.statusLine.Importance = widget.LowImportance
+	g.statusLine.Truncation = fyne.TextTruncateEllipsis
+	statusBar := container.NewBorder(widget.NewSeparator(), nil, nil,
+		widget.NewButtonWithIcon("Logs", theme.ListIcon(), g.showLogs), g.statusLine)
+
 	top := container.NewVBox(toolbar, g.buildStatusPanel())
-	g.win.SetContent(container.NewBorder(top, nil, nil, nil, g.table))
+	g.win.SetContent(container.NewBorder(top, statusBar, nil, nil, g.table))
 	g.win.Resize(fyne.NewSize(900, 600))
 }
 

@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -133,6 +135,7 @@ func (g *guiApp) handleLine(line string) {
 		return
 	}
 	fyne.Do(func() {
+		line = tidyLogLine(line)
 		if strings.TrimSpace(line) != "" {
 			g.lastChildLine = strings.TrimSpace(line)
 		}
@@ -140,12 +143,49 @@ func (g *guiApp) handleLine(line string) {
 	})
 }
 
+// logFieldPattern matches one key=value field of a logrus text line,
+// e.g. `time="…" level=info msg="[youtube] abc: Downloading webpage" proc=yt-dlp`.
+var logFieldPattern = regexp.MustCompile(`(\w+)=("(?:[^"\\]|\\.)*"|\S+)`)
+
+// tidyLogLine is how a line of the running "stream"'s output is shown in
+// the log window (and so the bottom bar): a logrus line becomes
+// "15:04:05 yt-dlp · message" (plus its level unless it's info); any
+// other line is kept as it is.
+func tidyLogLine(line string) string {
+	line = strings.TrimRight(line, " \t")
+	fields := map[string]string{}
+	for _, m := range logFieldPattern.FindAllStringSubmatch(line, -1) {
+		v := m[2]
+		if unquoted, err := strconv.Unquote(v); err == nil {
+			v = unquoted
+		}
+		fields[m[1]] = v
+	}
+	msg, ok := fields["msg"]
+	if !ok || !strings.HasPrefix(line, "time=") {
+		return line
+	}
+
+	var parts []string
+	if t, err := time.Parse(time.RFC3339, fields["time"]); err == nil {
+		parts = append(parts, t.Format("15:04:05"))
+	}
+	if lvl := fields["level"]; lvl != "" && lvl != "info" {
+		parts = append(parts, strings.ToUpper(lvl))
+	}
+	if proc := fields["proc"]; proc != "" {
+		parts = append(parts, proc+" ·")
+	}
+	return strings.Join(append(parts, msg), " ")
+}
+
 // maxTerminalLines caps the log window's buffer so a long-running
 // stream can't grow it (and the plain string-concat appendTerminal does)
 // without bound.
 const maxTerminalLines = 1000
 
-// appendTerminal adds a line (capped to maxTerminalLines) and follows the
+// appendTerminal adds a line (capped to maxTerminalLines), mirrors the
+// log's last line in the bottom bar, and follows the
 // bottom only if the view was already there.
 func (g *guiApp) appendTerminal(line string) {
 	stick := g.scrolledToBottom()
@@ -155,6 +195,12 @@ func (g *guiApp) appendTerminal(line string) {
 		text = strings.Join(lines[len(lines)-maxTerminalLines-1:], "\n")
 	}
 	g.terminal.SetText(text)
+
+	// The bottom bar is the log window's last line, whoever wrote it.
+	lines := strings.Split(strings.TrimSpace(line), "\n")
+	if last := strings.TrimSpace(lines[len(lines)-1]); last != "" {
+		setLabel(g.statusLine, last)
+	}
 
 	if stick {
 		g.terminalPanel.ScrollToBottom()

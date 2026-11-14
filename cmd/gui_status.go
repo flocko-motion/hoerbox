@@ -245,7 +245,7 @@ func phaseBadge(s runstate.Status, ok bool) (string, widget.Importance) {
 	case s.Running && s.Phase == runstate.PhaseDownloading:
 		return "DOWNLOADING", widget.SuccessImportance
 	case s.Running && s.Phase == runstate.PhaseWaiting:
-		return "WAITING", widget.HighImportance
+		return "WAITING", widget.DangerImportance
 	case s.Running:
 		return "PREPARING", widget.MediumImportance
 	case s.Phase == runstate.PhaseDone:
